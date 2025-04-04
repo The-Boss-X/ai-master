@@ -14,18 +14,22 @@ export default function Home() {
   const [inputText, setInputText] = useState('');
   const [processedText, setProcessedText] = useState(''); // Stores the input text that was processed
 
-  // State for each AI
-  const [geminiResponse, setGeminiResponse] = useState('');
+  // --- State for each AI ---
+  // Gemini Flash (Panel 1)
+  const [geminiFlashResponse, setGeminiFlashResponse] = useState('');
+  const [geminiFlashLoading, setGeminiFlashLoading] = useState(false);
+  const [geminiFlashError, setGeminiFlashError] = useState<string | null>(null);
+
+  // ChatGPT (Panel 2)
   const [chatgptResponse, setChatgptResponse] = useState('');
-  const [perplexityResponse, setPerplexityResponse] = useState('');
-
-  const [geminiLoading, setGeminiLoading] = useState(false);
   const [chatgptLoading, setChatgptLoading] = useState(false);
-  const [perplexityLoading, setPerplexityLoading] = useState(false);
-
-  const [geminiError, setGeminiError] = useState<string | null>(null);
   const [chatgptError, setChatgptError] = useState<string | null>(null);
-  const [perplexityError, setPerplexityError] = useState<string | null>(null);
+
+  // Gemini 1.5 Pro (Panel 3)
+  const [geminiProResponse, setGeminiProResponse] = useState('');
+  const [geminiProLoading, setGeminiProLoading] = useState(false);
+  const [geminiProError, setGeminiProError] = useState<string | null>(null);
+  // --- End State ---
 
   const [showPanels, setShowPanels] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -34,23 +38,24 @@ export default function Home() {
     setInputText(e.target.value);
   };
 
-  const handleProcessText = async () => { // Make the function async
+  // No longer async at the top level, as we don't await Promise.all
+  const handleProcessText = () => {
     if (inputText.trim() === '') {
       return; // Don't process empty input
     }
 
-    // Reset states before new request
-    setGeminiLoading(true);
+    // Reset states before new request for all AIs
+    setGeminiFlashLoading(true);
     setChatgptLoading(true);
-    setPerplexityLoading(true);
+    setGeminiProLoading(true);
 
-    setGeminiError(null);
+    setGeminiFlashError(null);
     setChatgptError(null);
-    setPerplexityError(null);
+    setGeminiProError(null);
 
-    setGeminiResponse('');
+    setGeminiFlashResponse('');
     setChatgptResponse('');
-    setPerplexityResponse('');
+    setGeminiProResponse('');
 
     setProcessedText(inputText); // Store the text being processed
     setShowPanels(true); // Show panels immediately
@@ -62,96 +67,82 @@ export default function Home() {
     const currentInput = inputText; // Capture current input for API calls
     setInputText(''); // Clear the input field immediately
 
-    try {
-      // Use Promise.allSettled to wait for all requests, even if some fail
-      const results = await Promise.allSettled([
-        fetch('/api/gemini', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: currentInput }),
-        }),
-        fetch('/api/chatgpt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: currentInput }),
-        }),
-        fetch('/api/perplexity', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: currentInput }),
-        }),
-      ]);
+    // --- Initiate API Calls Individually ---
 
-      // --- Process Gemini Response ---
-      const geminiResult = results[0];
-      if (geminiResult.status === 'fulfilled') {
-        const response = geminiResult.value;
+    // 1. Gemini Flash Request
+    fetch('/api/gemini-flash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: currentInput }),
+    })
+    .then(async (response) => {
         const data: ApiResponse = await response.json();
         if (!response.ok) {
-          console.error("Gemini API Error Response:", data);
-          setGeminiError(data.error || `Request failed with status ${response.status}`);
-        } else {
-          setGeminiResponse(data.response || '');
+            console.error("Gemini Flash API Error Response:", data);
+            // Throw an error to be caught by the .catch block
+            throw new Error(data.error || `Request failed with status ${response.status}`);
         }
-      } else {
-        console.error("Failed to fetch from Gemini API route:", geminiResult.reason);
-        setGeminiError(geminiResult.reason?.message || 'Failed to connect to the Gemini service.');
-      }
-      setGeminiLoading(false);
+        setGeminiFlashResponse(data.response || '');
+    })
+    .catch((error: any) => {
+        console.error("Failed to fetch or process Gemini Flash API route:", error);
+        setGeminiFlashError(error.message || 'Failed to connect to the Gemini Flash service.');
+    })
+    .finally(() => {
+        setGeminiFlashLoading(false); // Stop loading indicator for this AI specifically
+    });
 
-      // --- Process ChatGPT Response ---
-      const chatgptResult = results[1];
-      if (chatgptResult.status === 'fulfilled') {
-        const response = chatgptResult.value;
+    // 2. ChatGPT Request
+    fetch('/api/chatgpt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: currentInput }),
+    })
+    .then(async (response) => {
         const data: ApiResponse = await response.json();
         if (!response.ok) {
-           console.error("ChatGPT API Error Response:", data);
-          setChatgptError(data.error || `Request failed with status ${response.status}`);
-        } else {
-          setChatgptResponse(data.response || '');
+            console.error("ChatGPT API Error Response:", data);
+            throw new Error(data.error || `Request failed with status ${response.status}`);
         }
-      } else {
-        console.error("Failed to fetch from ChatGPT API route:", chatgptResult.reason);
-        setChatgptError(chatgptResult.reason?.message || 'Failed to connect to the ChatGPT service.');
-      }
-      setChatgptLoading(false);
+        setChatgptResponse(data.response || '');
+    })
+    .catch((error: any) => {
+        console.error("Failed to fetch or process ChatGPT API route:", error);
+        setChatgptError(error.message || 'Failed to connect to the ChatGPT service.');
+    })
+    .finally(() => {
+        setChatgptLoading(false); // Stop loading indicator for this AI specifically
+    });
 
-      // --- Process Perplexity Response ---
-      const perplexityResult = results[2];
-      if (perplexityResult.status === 'fulfilled') {
-        const response = perplexityResult.value;
+    // 3. Gemini Pro Request
+    fetch('/api/gemini-pro', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: currentInput }),
+    })
+    .then(async (response) => {
         const data: ApiResponse = await response.json();
         if (!response.ok) {
-          console.error("Perplexity API Error Response:", data);
-          setPerplexityError(data.error || `Request failed with status ${response.status}`);
-        } else {
-          setPerplexityResponse(data.response || '');
+            console.error("Gemini Pro API Error Response:", data);
+            throw new Error(data.error || `Request failed with status ${response.status}`);
         }
-      } else {
-        console.error("Failed to fetch from Perplexity API route:", perplexityResult.reason);
-        setPerplexityError(perplexityResult.reason?.message || 'Failed to connect to the Perplexity service.');
-      }
-      setPerplexityLoading(false);
-
-    } catch (err: any) {
-      // This catch block might not be strictly necessary with Promise.allSettled
-      // unless there's an issue setting up the promises themselves.
-      console.error("An unexpected error occurred during fetch setup:", err);
-      // Set a general error if needed, though individual errors are preferred
-      setGeminiError(geminiError || 'An unexpected error occurred.');
-      setChatgptError(chatgptError || 'An unexpected error occurred.');
-      setPerplexityError(perplexityError || 'An unexpected error occurred.');
-      setGeminiLoading(false);
-      setChatgptLoading(false);
-      setPerplexityLoading(false);
-    }
+        setGeminiProResponse(data.response || '');
+    })
+    .catch((error: any) => {
+        console.error("Failed to fetch or process Gemini Pro API route:", error);
+        setGeminiProError(error.message || 'Failed to connect to the Gemini Pro service.');
+    })
+    .finally(() => {
+        setGeminiProLoading(false); // Stop loading indicator for this AI specifically
+    });
   };
 
-  // Determine overall loading state for disabling input/button
-  const isLoading = geminiLoading || chatgptLoading || perplexityLoading;
+  // Determine overall loading state for disabling input/button - remains the same logic
+  const isLoading = geminiFlashLoading || chatgptLoading || geminiProLoading;
 
   return (
     <main className="flex flex-col items-center justify-start min-h-screen p-4 bg-gray-50">
+      {/* Input and Button Section */}
       <div className="w-full max-w-2xl mb-4 sticky top-4 z-10 bg-gray-50 pb-2">
         <input
           ref={inputRef}
@@ -161,7 +152,8 @@ export default function Home() {
           placeholder="Enter your prompt for the AIs..."
           className="w-full p-3 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 shadow-sm"
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !isLoading) {
+            // Prevent Enter submission if already loading or input is empty
+            if (e.key === 'Enter' && !isLoading && inputText.trim() !== '') {
               handleProcessText();
             }
           }}
@@ -169,77 +161,75 @@ export default function Home() {
         />
         <button
           onClick={handleProcessText}
-          className={`w-full mt-2 p-3 text-white rounded-md font-semibold transition-colors duration-200 ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}`}
-          disabled={isLoading} // Disable button while any AI is loading
+          className={`w-full mt-2 p-3 text-white rounded-md font-semibold transition-colors duration-200 ${isLoading || inputText.trim() === '' ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}`}
+          disabled={isLoading || inputText.trim() === ''} // Disable button while loading OR if input is empty
         >
-          {isLoading ? 'Processing...' : 'Send to All AIs'}
+          {/* Show different text based on loading state */}
+          {geminiFlashLoading && chatgptLoading && geminiProLoading ? 'Processing all...' :
+           isLoading ? 'Processing...' :
+           'Send to All AIs'}
         </button>
       </div>
 
+      {/* AI Response Panels Section */}
       {showPanels && (
-        <div className="w-full max-w-6xl mt-6"> {/* Increased max-width */}
-          {/* Optional: Display the processed prompt */}
-           {/*<div className="mb-4 text-center">
-               <p className="text-lg font-semibold text-gray-700">Your Prompt: <span className="font-normal">{processedText}</span></p>
-           </div>*/}
+        <div className="w-full max-w-6xl mt-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4"> {/* Use grid for better alignment */}
-
-            {/* AI Panel 1 - Gemini */}
-            <div className="p-4 border rounded-lg bg-white shadow-md min-h-[150px]"> {/* Added min-height */}
-              <h2 className="text-xl font-semibold mb-2 text-blue-600">Gemini</h2>
-              {geminiLoading && <p className="text-gray-500 animate-pulse">Loading response...</p>}
-              {geminiError && <p className="text-red-600">Error: {geminiError}</p>}
-              {!geminiLoading && !geminiError && geminiResponse && (
-                <div>
-                  {/* <p className="text-sm text-gray-600 mb-1 font-medium">Response:</p> */}
-                  <p className="whitespace-pre-wrap text-gray-800">{geminiResponse}</p>
-                </div>
-              )}
-              {!geminiLoading && !geminiError && !geminiResponse && processedText && (
-                 <p className="text-gray-400 italic">No response received.</p>
-              )}
-               {!geminiLoading && !geminiError && !geminiResponse && !processedText && (
-                 <p className="text-gray-400 italic">Ready.</p> // Initial state
-               )}
+            {/* AI Panel 1 - Gemini Flash */}
+            <div className="p-4 border rounded-lg bg-white shadow-md min-h-[150px] flex flex-col"> {/* Flex column for structure */}
+              <h2 className="text-xl font-semibold mb-2 text-blue-600 flex-shrink-0">Gemini Flash</h2>
+              <div className="flex-grow overflow-y-auto"> {/* Allow content to scroll if needed */}
+                {geminiFlashLoading && <p className="text-gray-500 animate-pulse">Loading response...</p>}
+                {geminiFlashError && <p className="text-red-600">Error: {geminiFlashError}</p>}
+                {!geminiFlashLoading && !geminiFlashError && geminiFlashResponse && (
+                  <p className="whitespace-pre-wrap text-gray-800">{geminiFlashResponse}</p>
+                )}
+                {/* Show "No response" only after loading finishes and if there's no error/response */}
+                {!geminiFlashLoading && !geminiFlashError && !geminiFlashResponse && processedText && (
+                  <p className="text-gray-400 italic">No response received.</p>
+                )}
+                {/* Initial ready state before first processing */}
+                {!geminiFlashLoading && !geminiFlashError && !geminiFlashResponse && !processedText && (
+                  <p className="text-gray-400 italic">Ready.</p>
+                )}
+              </div>
             </div>
 
             {/* AI Panel 2 - ChatGPT */}
-            <div className="p-4 border rounded-lg bg-white shadow-md min-h-[150px]">
-              <h2 className="text-xl font-semibold mb-2 text-green-600">ChatGPT</h2>
-               {chatgptLoading && <p className="text-gray-500 animate-pulse">Loading response...</p>}
-               {chatgptError && <p className="text-red-600">Error: {chatgptError}</p>}
-               {!chatgptLoading && !chatgptError && chatgptResponse && (
-                <div>
-                  {/* <p className="text-sm text-gray-600 mb-1 font-medium">Response:</p> */}
+            <div className="p-4 border rounded-lg bg-white shadow-md min-h-[150px] flex flex-col">
+              <h2 className="text-xl font-semibold mb-2 text-green-600 flex-shrink-0">ChatGPT</h2>
+               <div className="flex-grow overflow-y-auto">
+                 {chatgptLoading && <p className="text-gray-500 animate-pulse">Loading response...</p>}
+                 {chatgptError && <p className="text-red-600">Error: {chatgptError}</p>}
+                 {!chatgptLoading && !chatgptError && chatgptResponse && (
                   <p className="whitespace-pre-wrap text-gray-800">{chatgptResponse}</p>
-                </div>
-              )}
-               {!chatgptLoading && !chatgptError && !chatgptResponse && processedText && (
-                 <p className="text-gray-400 italic">No response received.</p>
-              )}
-                {!chatgptLoading && !chatgptError && !chatgptResponse && !processedText && (
-                  <p className="text-gray-400 italic">Ready.</p> // Initial state
-                )}
+                 )}
+                 {!chatgptLoading && !chatgptError && !chatgptResponse && processedText && (
+                   <p className="text-gray-400 italic">No response received.</p>
+                 )}
+                 {!chatgptLoading && !chatgptError && !chatgptResponse && !processedText && (
+                    <p className="text-gray-400 italic">Ready.</p>
+                 )}
+               </div>
             </div>
 
-            {/* AI Panel 3 - Perplexity */}
-            <div className="p-4 border rounded-lg bg-white shadow-md min-h-[150px]">
-              <h2 className="text-xl font-semibold mb-2 text-purple-600">Perplexity</h2>
-               {perplexityLoading && <p className="text-gray-500 animate-pulse">Loading response...</p>}
-               {perplexityError && <p className="text-red-600">Error: {perplexityError}</p>}
-               {!perplexityLoading && !perplexityError && perplexityResponse && (
-                <div>
-                  {/* <p className="text-sm text-gray-600 mb-1 font-medium">Response:</p> */}
-                  <p className="whitespace-pre-wrap text-gray-800">{perplexityResponse}</p>
-                </div>
-              )}
-               {!perplexityLoading && !perplexityError && !perplexityResponse && processedText && (
-                 <p className="text-gray-400 italic">No response received.</p>
-              )}
-               {!perplexityLoading && !perplexityError && !perplexityResponse && !processedText && (
-                 <p className="text-gray-400 italic">Ready.</p> // Initial state
-               )}
+            {/* AI Panel 3 - Gemini 1.5 Pro */}
+            <div className="p-4 border rounded-lg bg-white shadow-md min-h-[150px] flex flex-col">
+              <h2 className="text-xl font-semibold mb-2 text-purple-600 flex-shrink-0">Gemini 1.5 Pro</h2>
+               <div className="flex-grow overflow-y-auto">
+                 {geminiProLoading && <p className="text-gray-500 animate-pulse">Loading response...</p>}
+                 {geminiProError && <p className="text-red-600">Error: {geminiProError}</p>}
+                 {!geminiProLoading && !geminiProError && geminiProResponse && (
+                  <p className="whitespace-pre-wrap text-gray-800">{geminiProResponse}</p>
+                 )}
+                 {!geminiProLoading && !geminiProError && !geminiProResponse && processedText && (
+                   <p className="text-gray-400 italic">No response received.</p>
+                 )}
+                 {!geminiProLoading && !geminiProError && !geminiProResponse && !processedText && (
+                   <p className="text-gray-400 italic">Ready.</p>
+                 )}
+               </div>
             </div>
           </div>
         </div>

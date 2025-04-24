@@ -5,8 +5,8 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, Session, SupabaseClient } from '@supabase/supabase-js';
 // Import your configured client-side Supabase client
-// Make sure this uses createBrowserClient from '@supabase/ssr'
-import supabaseClient from '../../lib/supabaseClient'; // Adjust path as needed
+// Assuming AuthContext.tsx is in app/context/ and supabaseClient.ts is in app/lib/
+import supabaseClient from '../../lib/supabaseClient'; // Corrected relative path
 
 // Define the shape of the context value
 interface AuthContextType {
@@ -17,14 +17,11 @@ interface AuthContextType {
 }
 
 // Create the context with a default undefined value
-// Using undefined helps detect if a component tries to use the context
-// without being wrapped by the provider.
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+// Add 'export' here
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 /**
  * Custom hook to access the AuthContext.
- * Provides a convenient way to get the user session and loading state.
- * Throws an error if used outside of an AuthProvider.
  */
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
@@ -149,3 +146,5 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     </AuthContext.Provider>
   );
 };
+
+// No need to export AuthContext separately again here if exported at creation

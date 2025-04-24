@@ -1,9 +1,9 @@
 // app/layout.tsx
 import React from 'react';
-// Correctly import AuthProvider from the context directory
+// CORRECT IMPORT: Import AuthProvider from the context directory
 import { AuthProvider } from './context/AuthContext';
-// Import the AccountButton component (ensure path is correct)
-import AccountButton from './components/AccountButton';
+// Assuming AccountButton exists and path is correct - uncomment if you have this component
+import AccountButton from './components/AccountButton'; // Make sure this path is correct
 import './globals.css'; // Your global styles
 import { Inter } from "next/font/google"; // Import font
 
@@ -11,8 +11,8 @@ const inter = Inter({ subsets: ["latin"] }); // Initialize font
 
 // Define metadata (can be static or dynamic)
 export const metadata = {
-  title: 'AI Comparison App',
-  description: 'Compare responses from multiple AI models.',
+  title: 'Multi AI',
+  description: 'Responses from multiple AI models.',
 };
 
 export default function RootLayout({

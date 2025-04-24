@@ -21,11 +21,11 @@ const AVAILABLE_MODELS = {
     'gemma-3-1b-it',
   ],
   ChatGPT: [
-    'GPT-4o',
-    'GPT-4o mini',
-    'GPT-4.1',
-    'GPT-4.1 nano',
-    'GPT-4.1 mini',
+    'gpt-4o-2024-08-06',
+    'o4-mini-2025-04-16',
+    'gpt-4.1-2025-04-14',
+    'gpt-4.1-nano-2025-04-14',
+    'gpt-4.1-mini-2025-04-14',
   ],
 } as const;
 

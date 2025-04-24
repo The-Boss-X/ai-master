@@ -1,128 +1,112 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 // app/api/get-history/route.ts
-
-export const dynamic = 'force-dynamic';
-
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
+// Assuming your type definition is updated elsewhere and imported if needed
+// import type { InteractionHistoryItem } from '../../types/InteractionHistoryItem';
 
-// Keep the InteractionHistoryItem interface definition
-export interface InteractionHistoryItem {
+export const dynamic = 'force-dynamic';
+
+// Define the expected structure of items returned by this route
+// This should match your updated InteractionHistoryItem type definition
+interface HistoryItemResponse {
   id: string;
   created_at: string;
   prompt: string;
   title?: string | null;
-  gemini_flash_response?: string | null;
-  chatgpt_response?: string | null;
-  gemini_pro_response?: string | null;
-  gemini_flash_error?: string | null;
-  chatgpt_error?: string | null;
-  gemini_pro_error?: string | null;
-  user_id?: string;
+  // Include the model columns
+  slot_1_model?: string | null; // Changed from slot_1_model_used for consistency with DB? Verify column name.
+  slot_1_response?: string | null;
+  slot_1_error?: string | null;
+  slot_2_model?: string | null; // Changed from slot_2_model_used for consistency with DB? Verify column name.
+  slot_2_response?: string | null;
+  slot_2_error?: string | null;
+  slot_3_model?: string | null; // Changed from slot_3_model_used for consistency with DB? Verify column name.
+  slot_3_response?: string | null;
+  slot_3_error?: string | null;
+  // user_id is usually not needed client-side due to RLS
 }
 
-export async function GET(req: Request) {
-  console.log('\n--- API Route /api/get-history START ---');
 
-  // Log Env Vars Check
-  console.log('API Route: Checking Env Vars...');
-  console.log('API Route: NEXT_PUBLIC_SUPABASE_URL exists:', !!process.env.NEXT_PUBLIC_SUPABASE_URL);
-  console.log('API Route: NEXT_PUBLIC_SUPABASE_ANON_KEY exists:', !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
-    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-    console.error("API Route: ERROR - Supabase URL or Anon Key missing in environment variables!");
-    return NextResponse.json({ error: 'Internal Server Error: Missing Supabase configuration.' }, { status: 500 });
-  }
-
-
+export async function GET() {
+  console.log("--- Get History API Start ---"); // Log start
   const cookieStore = await cookies();
-
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          const value = cookieStore.get(name)?.value;
-          console.log(`API Route: Cookie get('${name}'): ${value ? 'Found' : 'Not Found'}`);
-          return value;
-        },
-        // Read-only operations (like GET routes) typically don't need set/remove,
-        // but including logs can be useful for debugging complex scenarios.
-        // The try/catch blocks are standard from Supabase docs for SSR components/routes.
-        set(name: string, value: string, options: CookieOptions) {
-          try {
-            console.log(`API Route: Cookie set('${name}') called:`, { value: value ? '******' : value, options }); // Avoid logging sensitive token value
-            cookieStore.set({ name, value, ...options });
-          } catch (error) {
-            console.error('API Route: Error calling cookieStore.set (expected in read-only contexts):', error);
-          }
-        },
-        remove(name: string, options: CookieOptions) {
-          try {
-            console.log(`API Route: Cookie remove('${name}') called:`, { options });
-            cookieStore.set({ name, value: '', ...options });
-          } catch (error) {
-            console.error('API Route: Error calling cookieStore.delete (expected in read-only contexts):', error);
-          }
-        },
+        get(name: string) { return cookieStore.get(name)?.value; },
+        set(name: string, value: string, options: CookieOptions) { try { cookieStore.set({ name, value, ...options }); } catch (error) {} },
+        remove(name: string, options: CookieOptions) { try { cookieStore.set({ name, value: '', ...options }); } catch (error) {} },
       },
     }
   );
 
   try {
-    console.log('API Route: Attempting to get user session...');
+    // 1. Check session
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-
-    // Log the session and error regardless of outcome
-    console.log('API Route: supabase.auth.getSession() result:', {
-        session: session ? { user_id: session.user.id, expires_at: session.expires_at } : null, // Log relevant session info, not the whole object
-        error: sessionError ? sessionError.message : null,
-    });
-
-
     if (sessionError) {
-      console.error('API Route: Explicit Session error:', sessionError.message);
-      // Note: Don't return 401 here, let the check below handle lack of session
-      // Return 500 for unexpected session fetch errors
-      return NextResponse.json({ error: `Failed to get user session: ${sessionError.message}` }, { status: 500 });
+      console.error('Get History: Session error:', sessionError.message);
+      return NextResponse.json({ error: 'Failed to get user session.' }, { status: 500 });
     }
-
     if (!session) {
-      // This is where the 401 is triggered if no valid session is found
-      console.warn('API Route: No active session found. Returning 401 Unauthorized.');
-      return NextResponse.json({ error: 'Unauthorized: User not logged in or session invalid.' }, { status: 401 });
+      console.warn('Get History: Unauthorized attempt.');
+      return NextResponse.json({ error: 'Unauthorized: User not logged in.' }, { status: 401 });
     }
+    const userId = session.user.id;
+    console.log(`Get History: Session valid for user ${userId}. Fetching data...`);
 
-    // If we reach here, session is valid
-    console.log(`API Route: Session valid for user ${session.user.id}. Proceeding to fetch data...`);
+    // 2. Fetch data, including the new slot_..._model columns
+    const selectQuery = `
+        id,
+        created_at,
+        prompt,
+        title,
+        slot_1_model,
+        slot_1_response,
+        slot_1_error,
+        slot_2_model,
+        slot_2_response,
+        slot_2_error,
+        slot_3_model,
+        slot_3_response,
+        slot_3_error
+      `; // Define query string for logging
+    console.log(`Get History: Performing select: ${selectQuery.replace(/\s+/g, ' ').trim()}`); // Log the query
 
-    const { data, error: dbError } = await supabase
-      .from('interactions')
-      .select(`
-        id, created_at, prompt, title, gemini_flash_response, chatgpt_response,
-        gemini_pro_response, gemini_flash_error, chatgpt_error, gemini_pro_error
-      `)
-      .order('created_at', { ascending: false })
-      .limit(100);
+    const { data, error: fetchError } = await supabase
+      .from('interactions') // Your table name
+      .select(selectQuery) // Use the defined query string
+      .order('created_at', { ascending: false }) // Get newest first
+      .limit(100); // Adjust limit as needed
 
-    if (dbError) {
-      console.error('API Route: Supabase fetch history error:', dbError);
-      if (dbError.code === '42501') {
-        console.warn('API Route: RLS Permission denied (42501).');
+    // Log the raw data or error immediately after fetch
+    if (fetchError) {
+      console.error(`Get History: Supabase fetch error for user ${userId}:`, fetchError);
+      if (fetchError.code === '42501') { // RLS permission denied
         return NextResponse.json({ error: 'Permission denied to access history.' }, { status: 403 });
       }
-      return NextResponse.json({ error: `Failed to fetch interaction history: ${dbError.message}` }, { status: 500 });
+       if (fetchError.message.includes('column') && fetchError.message.includes('does not exist')) {
+           console.error("!!! Potential schema cache issue or mismatch between code and DB schema for 'interactions' table !!!");
+           return NextResponse.json({ success: false, error: `Database schema error: ${fetchError.message}` }, { status: 500 });
+      }
+      return NextResponse.json({ error: `Failed to fetch interaction history: ${fetchError.message}` }, { status: 500 });
     }
 
-    console.log(`API Route: Successfully fetched ${data?.length ?? 0} history items.`);
-    console.log('--- API Route /api/get-history END ---');
-    return NextResponse.json(data as InteractionHistoryItem[] | null ?? [], { status: 200 });
+    // Log the fetched data before sending response
+    console.log(`Get History: Successfully fetched ${data?.length ?? 0} items for user ${userId}. Sample data:`, JSON.stringify(data?.[0] ?? null, null, 2)); // Log first item sample
+
+    // 3. Return the fetched data
+    console.log("--- Get History API End (Success) ---");
+    // Cast the data to the expected response type array
+    return NextResponse.json(data as HistoryItemResponse[] | null ?? [], { status: 200 });
 
   } catch (err: any) {
-    console.error('API Route: Unhandled EXCEPTION in /api/get-history:', err);
-    console.log('--- API Route /api/get-history END (with error) ---');
+    console.error('Get History: Unexpected error in /api/get-history:', err);
+    console.log("--- Get History API End (Error) ---");
     return NextResponse.json({ error: 'Internal Server Error.' }, { status: 500 });
   }
 }

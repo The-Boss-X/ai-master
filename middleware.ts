@@ -7,9 +7,6 @@ export async function middleware(request: NextRequest) {
   console.log(`\n--- Middleware START for: ${request.nextUrl.pathname} ---`);
 
   // Log Env Vars Check
-  console.log('Middleware: Checking Env Vars...');
-  console.log('Middleware: NEXT_PUBLIC_SUPABASE_URL exists:', !!process.env.NEXT_PUBLIC_SUPABASE_URL);
-  console.log('Middleware: NEXT_PUBLIC_SUPABASE_ANON_KEY exists:', !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
     console.error("Middleware: ERROR - Supabase URL or Anon Key missing in environment variables!");
     // Consider returning an error response if critical env vars are missing
@@ -29,11 +26,9 @@ export async function middleware(request: NextRequest) {
       cookies: {
         get(name: string) {
           const value = request.cookies.get(name)?.value;
-          console.log(`Middleware: Cookie get('${name}'): ${value ? 'Found' : 'Not Found'}`);
           return value;
         },
         set(name: string, value: string, options: CookieOptions) {
-          console.log(`Middleware: Cookie set('${name}'):`, { value: value ? '******' : value, options }); // Avoid logging sensitive token value
           request.cookies.set({ name, value, ...options }); // Update request cookies for potential chaining
           response = NextResponse.next({ // Recreate response to apply changes
             request: { headers: request.headers },
@@ -41,7 +36,6 @@ export async function middleware(request: NextRequest) {
           response.cookies.set({ name, value, ...options }); // Set cookie on the response
         },
         remove(name: string, options: CookieOptions) {
-          console.log(`Middleware: Cookie remove('${name}'):`, { options });
           request.cookies.set({ name, value: '', ...options }); // Update request cookies
           response = NextResponse.next({ // Recreate response
             request: { headers: request.headers },

@@ -11,7 +11,7 @@ const inter = Inter({ subsets: ["latin"] }); // Initialize font
 
 // Define metadata (can be static or dynamic)
 export const metadata = {
-  title: 'Multi AI',
+  title: 'AI Master',
   description: 'Responses from multiple AI models.',
 };
 
@@ -31,7 +31,7 @@ export default function RootLayout({
             <div className="container mx-auto flex justify-between items-center px-4"> {/* Added padding */}
               {/* App Title */}
               <h1 className="text-xl font-semibold text-gray-800 dark:text-gray-100">
-                AI Comparator
+                AI Master
               </h1>
               {/* Account Button */}
               <div>

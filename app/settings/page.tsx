@@ -12,14 +12,20 @@ import { useAuth } from '../context/AuthContext'; // Assuming you use this for a
 // Group models by provider for clarity in the dropdown
 const AVAILABLE_MODELS = {
   Gemini: [
-    'gemini-1.5-flash-latest', // Example model names
-    'gemini-1.5-pro-latest',
-    'gemini-1.0-pro',
+    'gemini-2.5-pro-preview-03-25',
+    'gemini-2.5-flash-preview-04-17',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-1.5-pro',
+    'gemini-1.5-flash',
+    'gemma-3-1b-it',
   ],
   ChatGPT: [
-    'gpt-4o', // Example model names
-    'gpt-4-turbo',
-    'gpt-3.5-turbo',
+    'GPT-4o',
+    'GPT-4o mini',
+    'GPT-4.1',
+    'GPT-4.1 nano',
+    'GPT-4.1 mini',
   ],
 } as const;
 

@@ -737,7 +737,7 @@
                  {/* Show placeholder if logged in, settings loaded, but no models are configured AT ALL */}
                  {user && !settingsLoading && !hasActiveConfiguredSlots && !selectedHistoryId && (
                      <div className="flex-grow flex items-center justify-center text-gray-500 dark:text-gray-400 text-center px-4">
-                         No active AI models configured. Please visit  <Link href="/settings" className="underline text-blue-500 hover:text-blue-600">Settings</Link>.
+                         No active AI models configured. Please visit&nbsp;<Link href="/settings" className="underline text-blue-500 hover:text-blue-600"> Settings</Link>.
                      </div>
                  )}
                  {/* Placeholder if not logged in */}

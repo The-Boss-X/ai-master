@@ -16,16 +16,15 @@ interface ConversationMessage {
 // Define expected request body structure (including history)
 interface CallOpenAIRequest {
   prompt: string; // The latest user prompt
-  model: string;
-  slotNumber: 1 | 2 | 3;
+  model: string; // Specific OpenAI model name (e.g., 'gpt-4o')
+  slotNumber: 1 | 2 | 3; // Still needed for context/logging if desired, but not for key fetching
   conversationHistory?: ConversationMessage[]; // Optional: History sent from client
 }
 
-// Explicitly type the expected shape of the settings object fetched from Supabase
-interface UserSettingsKeys {
-    slot_1_api_key_encrypted: string | null;
-    slot_2_api_key_encrypted: string | null;
-    slot_3_api_key_encrypted: string | null;
+// **MODIFIED**: Explicitly type the expected shape of the relevant settings object fetched from Supabase
+interface UserOpenAISettings {
+    openai_api_key_encrypted: string | null;
+    // Add other settings if needed, but only the key is required here
 }
 
 
@@ -84,47 +83,72 @@ export async function POST(request: NextRequest) {
     try { payload = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 }); }
     const { prompt, model, slotNumber, conversationHistory } = payload;
 
-    if (!prompt || !model || !slotNumber || ![1, 2, 3].includes(slotNumber)) {
-      return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
+    if (!prompt || !model || !slotNumber) { // slotNumber still useful for logging/context
+      return NextResponse.json({ error: 'Missing required fields (prompt, model, slotNumber).' }, { status: 400 });
     }
 
-    // Fetch and decrypt API Key
-    const apiKeyColumn = `slot_${slotNumber}_api_key_encrypted` as const;
-    const { data: settingsData, error: fetchError } = await supabase.from('user_settings').select(apiKeyColumn).eq('user_id', userId).single();
-    const settings = settingsData as UserSettingsKeys | null; // Cast fetched data
+    // **MODIFIED**: Fetch and decrypt the centralized OpenAI API Key
+    const { data: settingsData, error: fetchError } = await supabase
+        .from('user_settings')
+        .select('openai_api_key_encrypted') // Select the specific column
+        .eq('user_id', userId)
+        .single();
 
-    if (fetchError || !settings) {
-        if (fetchError?.code === 'PGRST116') return NextResponse.json({ error: `API Key for Slot ${slotNumber} not configured.` }, { status: 400 });
-        console.error(`Call OpenAI: Error fetching API key for user ${userId}, slot ${slotNumber}:`, fetchError);
-        return NextResponse.json({ error: `Database error fetching API Key for Slot ${slotNumber}.` }, { status: 500 });
+    // Cast fetched data to the specific type
+    const settings = settingsData as UserOpenAISettings | null;
+
+    if (fetchError) {
+        if (fetchError?.code === 'PGRST116') { // Handle case where user has no settings row yet
+            console.warn(`Call OpenAI: No settings found for user ${userId}.`);
+            return NextResponse.json({ error: 'OpenAI API Key not configured in Settings.' }, { status: 400 });
+        }
+        console.error(`Call OpenAI: Database error fetching API key for user ${userId}:`, fetchError);
+        return NextResponse.json({ error: 'Database error fetching API Key.' }, { status: 500 });
     }
-    const encryptedApiKey = settings[apiKeyColumn];
-    if (!encryptedApiKey) return NextResponse.json({ error: `API Key for Slot ${slotNumber} is missing.` }, { status: 400 });
+
+     if (!settings) { // Should be caught by PGRST116, but double-check
+        console.warn(`Call OpenAI: Settings object null for user ${userId} even after successful fetch.`);
+        return NextResponse.json({ error: 'OpenAI API Key not configured in Settings.' }, { status: 400 });
+    }
+
+    const encryptedApiKey = settings.openai_api_key_encrypted;
+    if (!encryptedApiKey) {
+        console.warn(`Call OpenAI: OpenAI API Key is missing or null for user ${userId}.`);
+        return NextResponse.json({ error: 'OpenAI API Key is missing in Settings.' }, { status: 400 });
+    }
+
     const decryptedApiKey = decryptData(encryptedApiKey, encryptionKey);
-    if (!decryptedApiKey) return NextResponse.json({ error: 'Could not authenticate with AI service. Check API Key in Settings.' }, { status: 400 });
+    if (!decryptedApiKey) {
+        console.error(`Call OpenAI: Failed to decrypt OpenAI API key for user ${userId}.`);
+        return NextResponse.json({ error: 'Could not authenticate with AI service. Check API Key in Settings.' }, { status: 400 });
+    }
+    // --- End API Key Fetch/Decrypt ---
+
 
     // Prepare messages for OpenAI API
+    // (Message preparation logic remains the same)
     const messagesForApi: OpenAI.Chat.ChatCompletionMessageParam[] = (conversationHistory || [])
         .filter(msg => msg.content?.trim())
         .map(msg => ({
-            // *** FIX: Explicitly cast the role to the expected type ***
+            // Map 'model' role from internal state to 'assistant' for OpenAI
             role: (msg.role === 'model' ? 'assistant' : msg.role) as 'user' | 'assistant' | 'system',
             content: msg.content
         }));
 
     // Add the current prompt as the last user message if it's not already there
+    // (This logic ensures the latest prompt is included correctly)
      if (messagesForApi.length === 0 || messagesForApi[messagesForApi.length - 1].role !== 'user' || messagesForApi[messagesForApi.length - 1].content !== prompt) {
-        // Check if last message is already the same user prompt to avoid duplicates
-        if(messagesForApi[messagesForApi.length - 1]?.role !== 'user' || messagesForApi[messagesForApi.length - 1]?.content !== prompt) {
-           messagesForApi.push({ role: 'user', content: prompt });
-        }
+         // Check if last message is already the same user prompt to avoid duplicates
+         if(messagesForApi[messagesForApi.length - 1]?.role !== 'user' || messagesForApi[messagesForApi.length - 1]?.content !== prompt) {
+            messagesForApi.push({ role: 'user', content: prompt });
+         }
     }
 
 
     // Call OpenAI API
     const openai = new OpenAI({ apiKey: decryptedApiKey });
     try {
-      console.log(`Calling OpenAI model ${model} for user ${userId}, slot ${slotNumber} with history length ${messagesForApi.length}`);
+      console.log(`Calling OpenAI model ${model} for user ${userId} (via slot ${slotNumber}) with history length ${messagesForApi.length}`);
       const completion = await openai.chat.completions.create({
         model: model,
         messages: messagesForApi, // Pass the prepared message history
@@ -133,16 +157,20 @@ export async function POST(request: NextRequest) {
       if (!responseText) throw new Error('No response text received from OpenAI.');
       return NextResponse.json({ response: responseText.trim() }, { status: 200 });
     } catch (apiError: any) {
-       console.error(`Call OpenAI: OpenAI API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);
-       let errorMessage = 'Failed to get response from OpenAI.'; let errorStatus = 500;
-       if (apiError instanceof OpenAI.APIError) {
-           errorMessage = apiError.message || errorMessage;
-           errorStatus = apiError.status || errorStatus;
-           if (apiError.status === 401) errorMessage = "Invalid OpenAI API Key provided. Please check your key in Settings.";
-           else if (apiError.status === 429) errorMessage = "OpenAI rate limit exceeded. Please try again later.";
-           else if (apiError.code === 'model_not_found') { errorMessage = `OpenAI model '${model}' not found or unavailable.`; errorStatus = 400; }
-       } else if (apiError.message) { errorMessage = apiError.message; }
-       return NextResponse.json({ error: errorMessage }, { status: errorStatus });
+        console.error(`Call OpenAI: OpenAI API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);
+        let errorMessage = 'Failed to get response from OpenAI.'; let errorStatus = 500;
+        if (apiError instanceof OpenAI.APIError) {
+            errorMessage = apiError.message || errorMessage;
+            errorStatus = apiError.status || errorStatus;
+            // More specific error messages based on status/code
+            if (apiError.status === 401) errorMessage = "Invalid OpenAI API Key provided. Please check your key in Settings.";
+            else if (apiError.status === 429) errorMessage = "OpenAI rate limit exceeded or quota reached. Please check your usage or try again later.";
+            else if (apiError.code === 'model_not_found') { errorMessage = `OpenAI model '${model}' not found or unavailable.`; errorStatus = 400; }
+            else if (apiError.status === 400) { // Broader bad request
+                 errorMessage = `OpenAI request failed (Bad Request): ${apiError.message || 'Check request format/parameters.'}`;
+            }
+        } else if (apiError.message) { errorMessage = apiError.message; }
+        return NextResponse.json({ error: errorMessage }, { status: errorStatus });
     }
   } catch (error: any) {
     console.error('Call OpenAI: Unexpected error:', error);

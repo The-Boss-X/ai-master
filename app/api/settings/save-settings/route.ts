@@ -10,14 +10,14 @@ import crypto from 'crypto'; // Import Node.js crypto module
 // Ensure this route is always dynamic
 export const dynamic = 'force-dynamic';
 
-// Define expected request body structure from the client
+// **MODIFIED**: Define expected request body structure from the client
 interface SaveSettingsPayload {
   slot_1_model?: string | null;
   slot_2_model?: string | null;
   slot_3_model?: string | null;
-  slot_1_api_key?: string | null; // Plain text key received from client
-  slot_2_api_key?: string | null; // Plain text key received from client
-  slot_3_api_key?: string | null; // Plain text key received from client
+  gemini_api_key?: string | null; // Plain text Gemini key received from client
+  openai_api_key?: string | null; // Plain text OpenAI key received from client
+  // **REMOVED**: slot_X_api_key fields
 }
 
 // --- Encryption Helper ---
@@ -86,31 +86,27 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Invalid JSON payload received.' }, { status: 400 });
     }
 
-    // 3. Encrypt API Keys if provided
-    let encryptedKey1: string | null = null;
-    let encryptedKey2: string | null = null;
-    let encryptedKey3: string | null = null;
+    // 3. **MODIFIED**: Encrypt provider-specific API Keys if provided
+    let encryptedGeminiKey: string | null = null;
+    let encryptedOpenAIKey: string | null = null;
     let encryptionError = false;
 
-    if (settingsPayload.slot_1_api_key) {
-        encryptedKey1 = encryptData(settingsPayload.slot_1_api_key, encryptionKey);
-        if (!encryptedKey1) encryptionError = true;
+    if (settingsPayload.gemini_api_key) {
+        encryptedGeminiKey = encryptData(settingsPayload.gemini_api_key, encryptionKey);
+        if (!encryptedGeminiKey) encryptionError = true;
     }
-    if (settingsPayload.slot_2_api_key) {
-        encryptedKey2 = encryptData(settingsPayload.slot_2_api_key, encryptionKey);
-        if (!encryptedKey2) encryptionError = true;
+    if (settingsPayload.openai_api_key) {
+        encryptedOpenAIKey = encryptData(settingsPayload.openai_api_key, encryptionKey);
+        if (!encryptedOpenAIKey) encryptionError = true;
     }
-     if (settingsPayload.slot_3_api_key) {
-        encryptedKey3 = encryptData(settingsPayload.slot_3_api_key, encryptionKey);
-        if (!encryptedKey3) encryptionError = true;
-    }
+    // **REMOVED**: Encryption logic for slot_X_api_key
 
     if (encryptionError) {
         // Logged internally by encryptData
         return NextResponse.json({ error: 'Failed to process API key data securely.' }, { status: 500 });
     }
 
-    // 4. Prepare data for Supabase upsert operation
+    // 4. **MODIFIED**: Prepare data for Supabase upsert operation
     // Use Record<string, any> for flexibility with conditional key inclusion
     const settingsDataToSave: Record<string, any> = {
       user_id: userId,
@@ -122,9 +118,9 @@ export async function POST(request: NextRequest) {
 
     // Only add ENCRYPTED keys to the update object if they were successfully encrypted
     // This prevents overwriting existing keys with null if the user didn't provide a new key
-    if (encryptedKey1) settingsDataToSave.slot_1_api_key_encrypted = encryptedKey1;
-    if (encryptedKey2) settingsDataToSave.slot_2_api_key_encrypted = encryptedKey2;
-    if (encryptedKey3) settingsDataToSave.slot_3_api_key_encrypted = encryptedKey3;
+    if (encryptedGeminiKey) settingsDataToSave.gemini_api_key_encrypted = encryptedGeminiKey;
+    if (encryptedOpenAIKey) settingsDataToSave.openai_api_key_encrypted = encryptedOpenAIKey;
+    // **REMOVED**: Adding slot_X_api_key_encrypted
 
     // 5. Use upsert to insert or update the user's settings row
     const { data, error: upsertError } = await supabase
@@ -135,7 +131,7 @@ export async function POST(request: NextRequest) {
 
     if (upsertError) {
       console.error(`Error saving user settings for user ${userId}:`, upsertError);
-       if (upsertError.code === '42501') {
+       if (upsertError.code === '42501') { // Check for RLS permission error
          return NextResponse.json({ error: 'Permission denied to save settings.' }, { status: 403 });
        }
       return NextResponse.json({ error: `Failed to save settings to database. DB Error: ${upsertError.message}` }, { status: 500 });

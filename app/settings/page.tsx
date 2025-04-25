@@ -36,40 +36,52 @@ const MODEL_OPTIONS = Object.entries(AVAILABLE_MODELS).flatMap(
 type AiModelOption = typeof MODEL_OPTIONS[number] | ''; // Type for selected model string
 
 // Define the structure for settings state (client-side)
-interface AiSettingsState {
-  model: AiModelOption; // Store the combined "Provider: Model" string
-  apiKey: string; // Still keep API key input for submission, but DON'T load/save it client-side
+// **MODIFIED**: Separate state for models and API keys
+interface SlotSettingsState {
+  slot_1_model: AiModelOption;
+  slot_2_model: AiModelOption;
+  slot_3_model: AiModelOption;
+}
+interface ApiKeySettingsState {
+  geminiApiKey: string; // State for Gemini key input
+  openaiApiKey: string; // State for OpenAI key input
 }
 
-// Define the structure for data fetched from backend
+// Define the structure for data fetched from backend (only models needed)
 interface FetchedSettings {
     slot_1_model: string | null;
     slot_2_model: string | null;
     slot_3_model: string | null;
+    // **REMOVED**: No longer fetching API keys to the client
 }
 
 export default function SettingsPage() {
   const { user, isLoading: isAuthLoading } = useAuth();
   const router = useRouter(); // Initialize router
 
-  // State for the three AI slots
-  const [ai1Settings, setAi1Settings] = useState<AiSettingsState>({ model: '', apiKey: '' });
-  const [ai2Settings, setAi2Settings] = useState<AiSettingsState>({ model: '', apiKey: '' });
-  const [ai3Settings, setAi3Settings] = useState<AiSettingsState>({ model: '', apiKey: '' });
+  // **MODIFIED**: State split into model selections and API key inputs
+  const [modelSettings, setModelSettings] = useState<SlotSettingsState>({
+    slot_1_model: '',
+    slot_2_model: '',
+    slot_3_model: '',
+  });
+  const [apiKeySettings, setApiKeySettings] = useState<ApiKeySettingsState>({
+    geminiApiKey: '',
+    openaiApiKey: '',
+  });
 
   const [isLoadingSettings, setIsLoadingSettings] = useState(true); // Loading state for fetching settings
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // --- Fetch Saved Settings from Backend ---
+  // --- Fetch Saved Settings (Models Only) from Backend ---
   const fetchSettings = useCallback(async () => {
     if (!user) {
-        // Clear settings if user logs out while on the page
-        setAi1Settings({ model: '', apiKey: '' });
-        setAi2Settings({ model: '', apiKey: '' });
-        setAi3Settings({ model: '', apiKey: '' });
-        setIsLoadingSettings(false); // Stop loading if no user
+        // Clear settings if user logs out
+        setModelSettings({ slot_1_model: '', slot_2_model: '', slot_3_model: '' });
+        // Don't clear API key input fields, user might be typing
+        setIsLoadingSettings(false);
         return;
     }
 
@@ -82,8 +94,6 @@ export default function SettingsPage() {
 
       if (response.status === 401) {
         setFetchError("Unauthorized. Please log in again.");
-        // Optionally redirect after a delay or show a persistent message
-        // setTimeout(() => router.push('/auth'), 2000);
         return;
       }
       if (!response.ok) {
@@ -93,28 +103,23 @@ export default function SettingsPage() {
 
       const data: FetchedSettings | null = await response.json();
 
-      // Set state based on fetched data or defaults if null/empty
-      // Keep existing apiKey input state if user typed something before fetch completed
-      setAi1Settings(prev => ({
-          ...prev,
-          model: (data?.slot_1_model || MODEL_OPTIONS[0] || '') as AiModelOption
-      }));
-      setAi2Settings(prev => ({
-          ...prev,
-          model: (data?.slot_2_model || MODEL_OPTIONS[1] || '') as AiModelOption
-      }));
-      setAi3Settings(prev => ({
-          ...prev,
-          model: (data?.slot_3_model || MODEL_OPTIONS[2] || '') as AiModelOption
-      }));
+      // Set state based on fetched model data or defaults if null/empty
+      setModelSettings({
+        slot_1_model: (data?.slot_1_model || MODEL_OPTIONS[0] || '') as AiModelOption,
+        slot_2_model: (data?.slot_2_model || MODEL_OPTIONS[1] || '') as AiModelOption,
+        slot_3_model: (data?.slot_3_model || MODEL_OPTIONS[2] || '') as AiModelOption,
+      });
+      // **NOTE**: API keys are NOT fetched or set here. They are write-only from the client.
 
     } catch (error: any) {
       console.error("Error fetching settings:", error);
       setFetchError(error.message || "An unknown error occurred while fetching settings.");
-      // Set default models on error to provide a usable state
-       setAi1Settings(prev => ({ ...prev, model: MODEL_OPTIONS[0] || '' }));
-       setAi2Settings(prev => ({ ...prev, model: MODEL_OPTIONS[1] || '' }));
-       setAi3Settings(prev => ({ ...prev, model: MODEL_OPTIONS[2] || '' }));
+      // Set default models on error
+      setModelSettings({
+        slot_1_model: (MODEL_OPTIONS[0] || '') as AiModelOption,
+        slot_2_model: (MODEL_OPTIONS[1] || '') as AiModelOption,
+        slot_3_model: (MODEL_OPTIONS[2] || '') as AiModelOption,
+      });
     } finally {
       setIsLoadingSettings(false);
     }
@@ -125,27 +130,27 @@ export default function SettingsPage() {
     if (!isAuthLoading && user) {
       fetchSettings();
     } else if (!isAuthLoading && !user) {
-        // Handle case where user is definitely logged out on initial load
-        setIsLoadingSettings(false); // Ensure loading stops
-        setAi1Settings({ model: '', apiKey: '' }); // Clear settings state
-        setAi2Settings({ model: '', apiKey: '' });
-        setAi3Settings({ model: '', apiKey: '' });
+      // Handle case where user is definitely logged out on initial load
+      setIsLoadingSettings(false); // Ensure loading stops
+      setModelSettings({ slot_1_model: '', slot_2_model: '', slot_3_model: '' }); // Clear model settings state
+      setApiKeySettings({ geminiApiKey: '', openaiApiKey: '' }); // Clear API key input state
     }
   }, [user, isAuthLoading, fetchSettings]);
 
   // --- Handle Input Changes ---
-  const handleModelChange = (slot: number, value: AiModelOption) => {
-    if (slot === 1) setAi1Settings(prev => ({ ...prev, model: value }));
-    if (slot === 2) setAi2Settings(prev => ({ ...prev, model: value }));
-    if (slot === 3) setAi3Settings(prev => ({ ...prev, model: value }));
+  const handleModelChange = (slot: 1 | 2 | 3, value: AiModelOption) => {
+    setModelSettings(prev => ({ ...prev, [`slot_${slot}_model`]: value }));
   };
 
-  const handleApiKeyChange = (slot: number, value: string) => {
+  // **MODIFIED**: Handle changes for the two central API key inputs
+  const handleApiKeyChange = (provider: 'gemini' | 'openai', value: string) => {
     // Clear save status if user types in API key field after a save attempt
     if (saveStatus !== 'idle') setSaveStatus('idle');
-    if (slot === 1) setAi1Settings(prev => ({ ...prev, apiKey: value }));
-    if (slot === 2) setAi2Settings(prev => ({ ...prev, apiKey: value }));
-    if (slot === 3) setAi3Settings(prev => ({ ...prev, apiKey: value }));
+    if (provider === 'gemini') {
+      setApiKeySettings(prev => ({ ...prev, geminiApiKey: value }));
+    } else if (provider === 'openai') {
+      setApiKeySettings(prev => ({ ...prev, openaiApiKey: value }));
+    }
   };
 
   // --- Handle Save ---
@@ -154,30 +159,22 @@ export default function SettingsPage() {
     setErrorMessage(null);
     setFetchError(null); // Clear fetch errors on save attempt
 
-    // Basic Validation
-    const selectedModels = [ai1Settings.model, ai2Settings.model, ai3Settings.model].filter(Boolean); // Filter out empty strings
-    // Check for duplicates only if more than one model is selected
+    // Basic Validation for models
+    const selectedModels = [modelSettings.slot_1_model, modelSettings.slot_2_model, modelSettings.slot_3_model].filter(Boolean);
     if (selectedModels.length > 1 && new Set(selectedModels).size !== selectedModels.length) {
         setErrorMessage("Please select unique AI models for each active slot.");
         setSaveStatus('error');
         return;
     }
-    // Ensure at least one model is selected to save something meaningful (optional check)
-    // if (selectedModels.length === 0) {
-    //    setErrorMessage("Please select at least one AI model.");
-    //    setSaveStatus('error');
-    //    return;
-    // }
 
+    // **MODIFIED**: Prepare payload with model selections and the NEW API key fields
     const payload = {
-        slot_1_model: ai1Settings.model || null,
-        slot_2_model: ai2Settings.model || null,
-        slot_3_model: ai3Settings.model || null,
-        // Include API keys in the payload sent to the backend
-        // The backend MUST handle encryption securely.
-        slot_1_api_key: ai1Settings.apiKey || null,
-        slot_2_api_key: ai2Settings.apiKey || null,
-        slot_3_api_key: ai3Settings.apiKey || null,
+        slot_1_model: modelSettings.slot_1_model || null,
+        slot_2_model: modelSettings.slot_2_model || null,
+        slot_3_model: modelSettings.slot_3_model || null,
+        // Send the provider-specific keys if they have been entered
+        gemini_api_key: apiKeySettings.geminiApiKey || null,
+        openai_api_key: apiKeySettings.openaiApiKey || null,
     };
 
     try {
@@ -190,16 +187,13 @@ export default function SettingsPage() {
         const result = await response.json(); // Attempt to parse JSON regardless of status
 
         if (!response.ok) {
-            // Use error from backend response if available
             throw new Error(result.error || `Failed to save settings (${response.status})`);
         }
 
         console.log("Settings saved successfully via API:", result.savedSettings);
         setSaveStatus('success');
-        // Optionally clear API key fields after successful save for better security UX
-        setAi1Settings(prev => ({ ...prev, apiKey: '' }));
-        setAi2Settings(prev => ({ ...prev, apiKey: '' }));
-        setAi3Settings(prev => ({ ...prev, apiKey: '' }));
+        // Clear API key fields after successful save for better security UX
+        setApiKeySettings({ geminiApiKey: '', openaiApiKey: '' });
 
         setTimeout(() => setSaveStatus('idle'), 2500); // Reset status after a delay
 
@@ -211,7 +205,7 @@ export default function SettingsPage() {
   };
 
   // --- Render Loading/Auth State ---
-   if (isAuthLoading || isLoadingSettings) {
+  if (isAuthLoading || isLoadingSettings) {
     // Show a loading indicator while checking auth or fetching settings
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900">
@@ -224,16 +218,16 @@ export default function SettingsPage() {
     // Show message and link to login if user is definitely not logged in
      return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900 p-4">
-         <div className="w-full max-w-md p-8 space-y-6 bg-white dark:bg-gray-800 rounded-lg shadow-xl text-center">
-             <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Access Denied</h2>
-             <p className="text-gray-600 dark:text-gray-300">You must be logged in to view and manage settings.</p>
-             <Link href="/auth" className="mt-4 inline-block px-6 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors">
-                 Sign In
-             </Link>
-             <div className="mt-6 text-sm">
-                <Link href="/" className="text-blue-600 dark:text-blue-400 hover:underline">&larr; Back to Home</Link>
-            </div>
-         </div>
+          <div className="w-full max-w-md p-8 space-y-6 bg-white dark:bg-gray-800 rounded-lg shadow-xl text-center">
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Access Denied</h2>
+              <p className="text-gray-600 dark:text-gray-300">You must be logged in to view and manage settings.</p>
+              <Link href="/auth" className="mt-4 inline-block px-6 py-2 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 transition-colors">
+                  Sign In
+              </Link>
+              <div className="mt-6 text-sm">
+                  <Link href="/" className="text-blue-600 dark:text-blue-400 hover:underline">&larr; Back to Home</Link>
+              </div>
+          </div>
       </div>
     );
   }
@@ -271,7 +265,46 @@ export default function SettingsPage() {
          )}
 
         <form className="space-y-8" onSubmit={(e) => { e.preventDefault(); handleSaveSettings(); }}>
-          {/* --- Slot 1 Settings --- */}
+
+          {/* --- API Key Settings (Centralized) --- */}
+          <fieldset className="border p-6 rounded-lg shadow-sm bg-blue-50 dark:bg-gray-700/50 border-blue-200 dark:border-gray-600">
+            <legend className="text-xl font-semibold px-2 text-gray-800 dark:text-gray-100">API Keys</legend>
+            <p className="text-sm text-gray-600 dark:text-gray-400 px-2 mb-4">Enter your API keys below. They will be stored securely and are only needed if you use the corresponding AI provider in any slot.</p>
+            <div className="mt-4 space-y-4">
+              {/* Gemini API Key Input */}
+              <div>
+                <label htmlFor="gemini-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Gemini API Key
+                </label>
+                <input
+                  id="gemini-key"
+                  type="password" // Use password type to mask input
+                  value={apiKeySettings.geminiApiKey}
+                  onChange={(e) => handleApiKeyChange('gemini', e.target.value)}
+                  placeholder="Enter New Gemini Key to Update (Optional)"
+                  className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                />
+                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Required if using any Gemini models.</p>
+              </div>
+              {/* OpenAI API Key Input */}
+              <div>
+                <label htmlFor="openai-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  OpenAI API Key
+                </label>
+                <input
+                  id="openai-key"
+                  type="password" // Use password type to mask input
+                  value={apiKeySettings.openaiApiKey}
+                  onChange={(e) => handleApiKeyChange('openai', e.target.value)}
+                  placeholder="Enter New OpenAI Key to Update (Optional)"
+                  className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Required if using any ChatGPT models.</p>
+              </div>
+            </div>
+          </fieldset>
+
+          {/* --- Slot 1 Settings (Model Only) --- */}
           <fieldset className="border p-6 rounded-lg shadow-sm bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600">
             <legend className="text-xl font-semibold px-2 text-gray-800 dark:text-gray-100">AI Slot 1</legend>
             <div className="mt-4 space-y-4">
@@ -281,7 +314,7 @@ export default function SettingsPage() {
                 </label>
                 <select
                   id="ai1-model"
-                  value={ai1Settings.model}
+                  value={modelSettings.slot_1_model}
                   onChange={(e) => handleModelChange(1, e.target.value as AiModelOption)}
                   className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
                 >
@@ -291,25 +324,11 @@ export default function SettingsPage() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label htmlFor="ai1-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  API Key (Stored Securely on Backend)
-                </label>
-                 <input
-                  id="ai1-key"
-                  type="password" // Use password type to mask input
-                  value={ai1Settings.apiKey}
-                  onChange={(e) => handleApiKeyChange(1, e.target.value)}
-                  placeholder="Enter New API Key to Update (Optional)"
-                  className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-                />
-                 <p className="mt-2 text-xs text-orange-700 dark:text-orange-400 font-medium">
-                 </p>
-              </div>
+              {/* **REMOVED**: API Key input for Slot 1 */}
             </div>
           </fieldset>
 
-          {/* --- Slot 2 Settings --- */}
+          {/* --- Slot 2 Settings (Model Only) --- */}
           <fieldset className="border p-6 rounded-lg shadow-sm bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600">
              <legend className="text-xl font-semibold px-2 text-gray-800 dark:text-gray-100">AI Slot 2</legend>
             <div className="mt-4 space-y-4">
@@ -319,7 +338,7 @@ export default function SettingsPage() {
                 </label>
                 <select
                   id="ai2-model"
-                  value={ai2Settings.model}
+                  value={modelSettings.slot_2_model}
                   onChange={(e) => handleModelChange(2, e.target.value as AiModelOption)}
                   className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
                 >
@@ -329,25 +348,11 @@ export default function SettingsPage() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label htmlFor="ai2-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  API Key (Stored Securely on Backend)
-                </label>
-                 <input
-                  id="ai2-key"
-                  type="password"
-                  value={ai2Settings.apiKey}
-                  onChange={(e) => handleApiKeyChange(2, e.target.value)}
-                  placeholder="Enter New API Key to Update (Optional)"
-                   className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-                />
-                 <p className="mt-2 text-xs text-orange-700 dark:text-orange-400 font-medium">
-                 </p>
-              </div>
+              {/* **REMOVED**: API Key input for Slot 2 */}
             </div>
           </fieldset>
 
-          {/* --- Slot 3 Settings --- */}
+          {/* --- Slot 3 Settings (Model Only) --- */}
            <fieldset className="border p-6 rounded-lg shadow-sm bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600">
              <legend className="text-xl font-semibold px-2 text-gray-800 dark:text-gray-100">AI Slot 3</legend>
             <div className="mt-4 space-y-4">
@@ -357,7 +362,7 @@ export default function SettingsPage() {
                 </label>
                 <select
                   id="ai3-model"
-                  value={ai3Settings.model}
+                  value={modelSettings.slot_3_model}
                   onChange={(e) => handleModelChange(3, e.target.value as AiModelOption)}
                   className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
                 >
@@ -367,21 +372,7 @@ export default function SettingsPage() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label htmlFor="ai3-key" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  API Key (Stored Securely on Backend)
-                </label>
-                 <input
-                  id="ai3-key"
-                  type="password"
-                  value={ai3Settings.apiKey}
-                  onChange={(e) => handleApiKeyChange(3, e.target.value)}
-                  placeholder="Enter New API Key to Update (Optional)"
-                   className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-                />
-                 <p className="mt-2 text-xs text-orange-700 dark:text-orange-400 font-medium">
-                 </p>
-              </div>
+              {/* **REMOVED**: API Key input for Slot 3 */}
             </div>
           </fieldset>
 
@@ -404,4 +395,5 @@ export default function SettingsPage() {
     </div>
   );
 }
+
 

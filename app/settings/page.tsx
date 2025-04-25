@@ -242,7 +242,7 @@ export default function SettingsPage() {
         </div>
 
         <h2 className="text-3xl font-bold text-center text-gray-900 dark:text-gray-100">
-          AI Comparison Settings
+          AI Master Settings
         </h2>
 
         {/* Fetch Error Message Display */}

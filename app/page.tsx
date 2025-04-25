@@ -11,6 +11,8 @@ import { useAuth } from './context/AuthContext';
 // Import types, including ConversationMessage
 import type { InteractionHistoryItem, ConversationMessage } from './types/InteractionHistoryItem';
 import HistorySidebar from './components/HistorySidebar';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 // Define the structure for data fetched from backend settings API
 interface FetchedSettings {
@@ -307,15 +309,24 @@ export default function Home() {
           <div className="w-full max-w-7xl grid grid-cols-1 md:grid-cols-3 gap-4 self-center flex-grow px-1 pb-4 overflow-hidden">
             {/* Panel 1 */}
             <div className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] border-gray-200 dark:border-gray-700 overflow-hidden ${!slot1State.modelName ? 'opacity-60 pointer-events-none' : ''}`}>
-              <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-blue-600 dark:text-blue-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot1State.modelName || 'Slot 1'}> {getModelDisplayName(slot1State.modelName)} </h2>
-              <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
-                {!slot1State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
-                {/* Log conversation history length for debugging */}
-                {/* {console.log("Panel 1 rendering history length:", slot1State.conversationHistory.length)} */}
-                {slot1State.modelName && slot1State.conversationHistory.map((msg, index) => ( <div key={`${selectedHistoryId || 'new'}-1-${index}`} className={`p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-blue-50 dark:bg-blue-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}> <p className="whitespace-pre-wrap">{msg.content}</p> </div> ))}
-                {slot1State.modelName && slot1State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
-                {slot1State.modelName && slot1State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot1State.error}</p>}
-              </div>
+                    <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-blue-600 dark:text-blue-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot1State.modelName || 'Slot 1'}> {getModelDisplayName(slot1State.modelName)} </h2>
+                    <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
+                      {!slot1State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
+                      {/* --- REVISED SECTION START --- */}
+                      {slot1State.modelName && slot1State.conversationHistory.map((msg, index) => (
+                        <div key={`${selectedHistoryId || 'new'}-1-${index}`}
+                             // MODIFIED LINE: Added prose classes
+                             className={`prose prose-sm dark:prose-invert max-w-none p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-blue-50 dark:bg-blue-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}>
+                           {/* ReactMarkdown component itself remains unchanged */}
+                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                             {msg.content}
+                           </ReactMarkdown>
+                        </div>
+                      ))}
+                       {/* --- REVISED SECTION END --- */}
+                      {slot1State.modelName && slot1State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
+                      {slot1State.modelName && slot1State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot1State.error}</p>}
+                    </div>
               {slot1State.modelName && !slot1State.loading && (selectedHistoryId || currentChatPrompt) && (
                  <div className="mt-auto p-4 pt-2 border-t dark:border-gray-600 flex space-x-2 flex-shrink-0">
                    <input type="text" value={slot1State.followUpInput} onChange={(e) => setSlot1State(prev => ({ ...prev, followUpInput: e.target.value }))} placeholder={`Reply...`} className="flex-grow p-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-1 focus:ring-blue-500 focus:outline-none" onKeyDown={(e) => { if (e.key === 'Enter' && slot1State.followUpInput.trim()) handleReplyToSlot(1); }} disabled={isProcessingSlot1} />
@@ -323,16 +334,26 @@ export default function Home() {
                  </div>
                )}
             </div>
-             {/* Panel 2 */}
+            {/* Panel 2 */}
             <div className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] border-gray-200 dark:border-gray-700 overflow-hidden ${!slot2State.modelName ? 'opacity-60 pointer-events-none' : ''}`}>
-              <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-green-600 dark:text-green-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot2State.modelName || 'Slot 2'}> {getModelDisplayName(slot2State.modelName)} </h2>
-              <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
-                {!slot2State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
-                 {/* {console.log("Panel 2 rendering history length:", slot2State.conversationHistory.length)} */}
-                {slot2State.modelName && slot2State.conversationHistory.map((msg, index) => ( <div key={`${selectedHistoryId || 'new'}-2-${index}`} className={`p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-green-50 dark:bg-green-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}> <p className="whitespace-pre-wrap">{msg.content}</p> </div> ))}
-                {slot2State.modelName && slot2State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
-                {slot2State.modelName && slot2State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot2State.error}</p>}
-              </div>
+                     <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-green-600 dark:text-green-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot2State.modelName || 'Slot 2'}> {getModelDisplayName(slot2State.modelName)} </h2>
+                     <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
+                       {!slot2State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
+                       {/* --- REVISED SECTION START --- */}
+                       {slot2State.modelName && slot2State.conversationHistory.map((msg, index) => (
+                         <div key={`${selectedHistoryId || 'new'}-2-${index}`}
+                              // MODIFIED LINE: Added prose classes
+                              className={`prose prose-sm dark:prose-invert max-w-none p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-green-50 dark:bg-green-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}>
+                            {/* ReactMarkdown component itself remains unchanged */}
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {msg.content}
+                            </ReactMarkdown>
+                         </div>
+                       ))}
+                       {/* --- REVISED SECTION END --- */}
+                       {slot2State.modelName && slot2State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
+                       {slot2State.modelName && slot2State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot2State.error}</p>}
+                     </div>
                {slot2State.modelName && !slot2State.loading && (selectedHistoryId || currentChatPrompt) && (
                  <div className="mt-auto p-4 pt-2 border-t dark:border-gray-600 flex space-x-2 flex-shrink-0">
                    <input type="text" value={slot2State.followUpInput} onChange={(e) => setSlot2State(prev => ({ ...prev, followUpInput: e.target.value }))} placeholder={`Reply...`} className="flex-grow p-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-1 focus:ring-green-500 focus:outline-none" onKeyDown={(e) => { if (e.key === 'Enter' && slot2State.followUpInput.trim()) handleReplyToSlot(2); }} disabled={isProcessingSlot2} />
@@ -342,14 +363,24 @@ export default function Home() {
             </div>
             {/* Panel 3 */}
             <div className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] border-gray-200 dark:border-gray-700 overflow-hidden ${!slot3State.modelName ? 'opacity-60 pointer-events-none' : ''}`}>
-              <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-purple-600 dark:text-purple-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot3State.modelName || 'Slot 3'}> {getModelDisplayName(slot3State.modelName)} </h2>
-               <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
-                  {!slot3State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
-                   {/* {console.log("Panel 3 rendering history length:", slot3State.conversationHistory.length)} */}
-                  {slot3State.modelName && slot3State.conversationHistory.map((msg, index) => ( <div key={`${selectedHistoryId || 'new'}-3-${index}`} className={`p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-purple-50 dark:bg-purple-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}> <p className="whitespace-pre-wrap">{msg.content}</p> </div> ))}
-                  {slot3State.modelName && slot3State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
-                  {slot3State.modelName && slot3State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot3State.error}</p>}
-               </div>
+                     <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-purple-600 dark:text-purple-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot3State.modelName || 'Slot 3'}> {getModelDisplayName(slot3State.modelName)} </h2>
+                       <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
+                         {!slot3State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
+                         {/* --- REVISED SECTION START --- */}
+                         {slot3State.modelName && slot3State.conversationHistory.map((msg, index) => (
+                           <div key={`${selectedHistoryId || 'new'}-3-${index}`}
+                                // MODIFIED LINE: Added prose classes
+                                className={`prose prose-sm dark:prose-invert max-w-none p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-purple-50 dark:bg-purple-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}>
+                              {/* ReactMarkdown component itself remains unchanged */}
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {msg.content}
+                              </ReactMarkdown>
+                           </div>
+                         ))}
+                         {/* --- REVISED SECTION END --- */}
+                         {slot3State.modelName && slot3State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
+                         {slot3State.modelName && slot3State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot3State.error}</p>}
+                       </div>
                {slot3State.modelName && !slot3State.loading && (selectedHistoryId || currentChatPrompt) && (
                  <div className="mt-auto p-4 pt-2 border-t dark:border-gray-600 flex space-x-2 flex-shrink-0">
                    <input type="text" value={slot3State.followUpInput} onChange={(e) => setSlot3State(prev => ({ ...prev, followUpInput: e.target.value }))} placeholder={`Reply...`} className="flex-grow p-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" onKeyDown={(e) => { if (e.key === 'Enter' && slot3State.followUpInput.trim()) handleReplyToSlot(3); }} disabled={isProcessingSlot3} />

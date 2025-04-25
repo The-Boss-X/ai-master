@@ -269,7 +269,7 @@
          </div>
 
          <h2 className="text-3xl font-bold text-center text-gray-900 dark:text-gray-100">
-           AI Comparison Settings
+           AI Master Settings
          </h2>
 
          {/* Error/Success Messages */}
@@ -346,8 +346,8 @@
 
            {/* --- Dynamic Slot Settings --- */}
            <fieldset className="border p-6 rounded-lg shadow-sm border-gray-200 dark:border-gray-600">
-              <legend className="text-xl font-semibold px-2 text-gray-800 dark:text-gray-100">Comparison Slots</legend>
-              <p className="text-sm text-gray-600 dark:text-gray-400 px-2 mb-4">Configure the AI models you want to compare. You can use between {MIN_SLOTS} and {MAX_SLOTS} slots.</p>
+              <legend className="text-xl font-semibold px-2 text-gray-800 dark:text-gray-100">AI Slots</legend>
+              <p className="text-sm text-gray-600 dark:text-gray-400 px-2 mb-4">Configure the AI models you want to use. You can use between {MIN_SLOTS} and {MAX_SLOTS} slots.</p>
 
               {/* Add/Remove Buttons */}
               <div className="flex justify-center space-x-4 my-4">

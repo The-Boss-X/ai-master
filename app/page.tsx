@@ -37,7 +37,9 @@
      conversationHistory: ConversationMessage[];
  }
 
+ // --- Panel Colors (Used for Model Messages) ---
  const PANEL_COLORS = [
+     // Base Tailwind classes for each theme
      { border: 'border-blue-200 dark:border-blue-700/60', text: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-900/30', focusRing: 'focus:ring-blue-500', button: 'bg-blue-500 hover:bg-blue-600' },
      { border: 'border-green-200 dark:border-green-700/60', text: 'text-green-600 dark:text-green-400', bg: 'bg-green-50 dark:bg-green-900/30', focusRing: 'focus:ring-green-500', button: 'bg-green-500 hover:bg-green-600' },
      { border: 'border-purple-200 dark:border-purple-700/60', text: 'text-purple-600 dark:text-purple-400', bg: 'bg-purple-50 dark:bg-purple-900/30', focusRing: 'focus:ring-purple-500', button: 'bg-purple-500 hover:bg-purple-600' },
@@ -103,9 +105,8 @@
                }
            }
            if (newSlotStates.length === 0) {
-               console.log("No valid models configured in settings, adding one default empty slot.");
+               console.log("No valid models configured in settings.");
                // Don't add an empty slot automatically, let the UI show "No slots configured"
-               // newSlotStates.push({...initialSlotState});
            }
            setSlotStates(newSlotStates);
            console.log(`Home Page: Applied general settings. Active slots: ${newSlotStates.length}`);
@@ -151,13 +152,13 @@
          setCurrentChatPrompt(null);
          setShowPanels(false);
      }
-   }, [user, isAuthLoading]);
+   }, [user, isAuthLoading]); // Removed fetchSettings/fetchHistory/selectedHistoryId dependencies
 
-   // Effect to refetch settings when selectedHistoryId becomes null
+   // Effect to refetch settings when selectedHistoryId becomes null (new chat started)
    useEffect(() => {
        if (!selectedHistoryId && user && !isAuthLoading) {
            console.log("History deselected (New Chat?), fetching settings...");
-           fetchSettings(false);
+           fetchSettings(false); // Fetch settings when starting a new chat
        }
    }, [selectedHistoryId, user, isAuthLoading, fetchSettings]);
 
@@ -171,6 +172,7 @@
              if (!prompt || !finalSlotState.modelName) return null;
              const logHistory: ConversationMessage[] = [{ role: 'user', content: prompt }];
              if (finalSlotState.response) { logHistory.push({ role: 'model', content: finalSlotState.response }); }
+             // Return history only if it has both user and model message for this initial turn
              return logHistory.length > 1 ? logHistory : null;
          };
 
@@ -184,12 +186,14 @@
              const convKey = `slot_${slotNum}_conversation`;
              if (slotState.modelName) {
                  dataToLog[modelKey] = slotState.modelName;
+                 // Only log conversation if model produced a response
                  dataToLog[convKey] = buildLogHistory(promptToLog, slotState);
              } else {
                   dataToLog[modelKey] = null;
                   dataToLog[convKey] = null;
              }
          });
+         // Ensure remaining slots are nullified in the log
          for (let i = currentSlotStates.length; i < MAX_SLOTS; i++) {
               const slotNum = i + 1;
               dataToLog[`slot_${slotNum}_model_used`] = null;
@@ -203,10 +207,11 @@
          } else {
              const newLogEntry = result.loggedData[0] as InteractionHistoryItem;
              if (newLogEntry?.id) {
+                 // Add new entry and set it as selected
                  setHistory(prev => [newLogEntry, ...prev.filter(h => h.id !== newLogEntry.id)]);
                  setSelectedHistoryId(newLogEntry.id);
              } else {
-                 fetchHistory();
+                 fetchHistory(); // Refetch if ID wasn't returned properly
              }
          }
      } catch (error) {
@@ -217,10 +222,11 @@
    // --- useEffect to Trigger Logging After Initial AI Calls Complete ---
    useEffect(() => {
      const anySlotLoading = slotStates.some(slot => slot.loading);
+     // Trigger log only if needsLogging is true and no slots are currently loading
      if (needsLogging && currentChatPrompt && slotStates.length > 0 && !anySlotLoading) {
        console.log("Home Page: All slots finished, triggering log for initial interaction.");
        logInitialInteraction(currentChatPrompt, slotStates);
-       setNeedsLogging(false);
+       setNeedsLogging(false); // Reset flag after logging attempt
      }
    }, [ slotStates, needsLogging, currentChatPrompt, logInitialInteraction ]);
 
@@ -229,13 +235,13 @@
    const handleHistoryClick = useCallback((item: InteractionHistoryItem) => {
      if (!user || uiLocked) return;
      console.log("Home Page: handleHistoryClick triggered for item:", item.id);
-     setUiLocked(true);
+     setUiLocked(true); // Lock UI during state transition
      setSelectedHistoryId(item.id);
-     setCurrentChatPrompt(item.prompt);
-     setLastSubmittedPrompt(null);
-     setMainInputText('');
-     setNeedsLogging(false);
-     setShowPanels(false);
+     setCurrentChatPrompt(item.prompt); // Set the initial prompt from history
+     setLastSubmittedPrompt(null); // Clear last submitted prompt
+     setMainInputText(''); // Clear main input area
+     setNeedsLogging(false); // Don't log when loading history
+     setShowPanels(false); // Hide panels briefly while loading state
 
      const newSlotStates: AiSlotState[] = [];
      for (let i = 0; i < MAX_SLOTS; i++) {
@@ -243,33 +249,48 @@
          const modelKey = `slot_${slotNum}_model_used` as keyof InteractionHistoryItem;
          const conversationKey = `slot_${slotNum}_conversation` as keyof InteractionHistoryItem;
 
-         if (item[modelKey]) {
-             const conversationHistory = (item[conversationKey] as ConversationMessage[] | null) || [];
-             // Validate model format
-             if (typeof item[modelKey] === 'string' && item[modelKey]?.includes(': ')) {
-                 newSlotStates.push({
-                     ...initialSlotState,
-                     modelName: item[modelKey] as string | null,
-                     response: conversationHistory.findLast(m => m.role === 'model')?.content || null,
-                     conversationHistory: conversationHistory,
-                 });
-             } else {
-                 console.warn(`Invalid model format in history item ${item.id} for slot ${slotNum}: "${item[modelKey]}". Skipping slot.`);
-             }
+         // Get model and conversation history from the item
+         const modelName = item[modelKey] as string | null;
+         const conversationHistory = (item[conversationKey] as ConversationMessage[] | null) || [];
+
+         // Check if model format is valid (basic check)
+         const isValidModel = typeof modelName === 'string' && modelName.includes(': ');
+
+         newSlotStates.push({
+             ...initialSlotState, // Start with initial state
+             modelName: isValidModel ? modelName : null, // Use valid model name or null
+             // Get last model response from history, or null if none/empty
+             response: conversationHistory.findLast(m => m.role === 'model')?.content || null,
+             conversationHistory: conversationHistory, // Assign the full history
+         });
+
+         if (modelName && !isValidModel) {
+              console.warn(`Invalid model format in history item ${item.id} for slot ${slotNum}: "${modelName}". Slot treated as empty.`);
          }
      }
-      if (newSlotStates.length === 0) {
-          console.warn(`History item ${item.id} resulted in zero valid active slots.`);
-          // Don't add an empty slot, let UI handle it
-      }
 
-     console.log(`Home Page: Prepared ${newSlotStates.length} slot states from history item ${item.id}.`);
-     setSlotStates(newSlotStates);
+      // Filter out slots that were *never* used in history (no model AND no conversation)
+      // This prevents showing completely empty slots just because MAX_SLOTS is 6
+      // const activeHistorySlots = newSlotStates.filter(s => s.modelName || s.conversationHistory.length > 0);
+
+      // Keep all 6 slots to maintain structure, UI will handle display
+      const finalSlotStates = newSlotStates;
+
+     if (finalSlotStates.length === 0) {
+          console.warn(`History item ${item.id} resulted in zero active slots after filtering.`);
+          // Potentially fetch current settings if history is completely empty? Or show message.
+          // For now, just set the empty array.
+     }
+
+     console.log(`Home Page: Prepared ${finalSlotStates.length} slot states from history item ${item.id}.`);
+     setSlotStates(finalSlotStates);
+
+     // Use setTimeout to allow state to update before showing panels
      setTimeout(() => {
-         setShowPanels(true);
-         setUiLocked(false);
-         console.log(`Home Page: State updated for history item ${item.id}.`);
-     }, 50);
+         setShowPanels(true); // Show panels after state update
+         setUiLocked(false); // Unlock UI
+         console.log(`Home Page: State updated and UI unlocked for history item ${item.id}.`);
+     }, 50); // Small delay
 
    }, [user, uiLocked]);
 
@@ -286,9 +307,9 @@
       setNeedsLogging(false);
       setSlotStates([]); // Clear slots immediately
       mainInputRef.current?.focus();
-      // Fetch fresh settings for the new chat
+      // Fetch fresh settings for the new chat state
       fetchSettings(false).finally(() => {
-        setUiLocked(false);
+        setUiLocked(false); // Unlock UI after settings are fetched
       });
     }, [user, uiLocked, fetchSettings]);
 
@@ -308,10 +329,11 @@
            modelString: string | null,
            promptToSend: string,
            currentHistory: ConversationMessage[],
-           currentInteractionId: string | null
+           currentInteractionId: string | null // ID of the chat in DB (null if new chat)
        ) => {
-           const slotNumber = slotIndex + 1;
+           const slotNumber = slotIndex + 1; // 1-based index for API/DB
 
+           // Helper function to update the state for the specific slot
            const updateSlotState = (updateFn: (prevState: AiSlotState) => AiSlotState) => {
                setSlotStates(prevStates =>
                    prevStates.map((state, index) =>
@@ -320,65 +342,74 @@
                );
            };
 
+           // Exit if no model or prompt
            if (!modelString || !promptToSend) {
                updateSlotState(prev => ({ ...prev, loading: false }));
                return;
            }
 
+           // --- History Preparation ---
            const newUserMessage: ConversationMessage = { role: 'user', content: promptToSend };
-           // Prepend the new user message to the history for the API call
+           // History sent to API includes the current user message
            const historyToSend = [...currentHistory, newUserMessage];
 
-           // Update state immediately to show the user message in the conversation
+           // --- Update UI Immediately ---
+           // Show the user's message and loading state right away
            updateSlotState(prev => ({
                ...prev,
                loading: true,
-               response: null,
-               error: null,
-               conversationHistory: historyToSend // Show user message right away
+               response: null, // Clear previous response
+               error: null,    // Clear previous error
+               conversationHistory: historyToSend // Update history with user message
            }));
 
+           // --- API Call ---
            let modelResponseText: string | null = null;
            try {
-               const parts = modelString.split(': '); if (parts.length !== 2) throw new Error(`Invalid model format: ${modelString}`);
-               const provider = parts[0]; const specificModel = parts[1];
+               // Parse provider and model
+               const parts = modelString.split(': ');
+               if (parts.length !== 2) throw new Error(`Invalid model format: ${modelString}`);
+               const provider = parts[0];
+               const specificModel = parts[1];
+
+               // Determine API endpoint based on provider
                let apiUrl = '';
-               // **MODIFIED**: Added 'Anthropic' case
                if (provider === 'ChatGPT') apiUrl = '/api/call-openai';
                else if (provider === 'Gemini') apiUrl = '/api/call-gemini';
-               else if (provider === 'Anthropic') apiUrl = '/api/call-anthropic'; // New endpoint
+               else if (provider === 'Anthropic') apiUrl = '/api/call-anthropic';
                else throw new Error(`Unsupported provider: ${provider}`);
 
+               // Make the API call
                const response = await fetch(apiUrl, {
                    method: 'POST',
                    headers: { 'Content-Type': 'application/json' },
-                   // Send the *entire* history including the latest user message
                    body: JSON.stringify({
-                       prompt: promptToSend, // Still useful for context/logging on backend if needed
+                       prompt: promptToSend, // Keep sending prompt for potential backend use/logging
                        model: specificModel,
-                       slotNumber, // Useful for logging/context on backend
-                       conversationHistory: historyToSend // Send history including the new user message
+                       slotNumber,
+                       conversationHistory: historyToSend // Send history *including* the latest user message
                    })
                });
-               const result = await response.json(); if (!response.ok) throw new Error(result.error || `API call failed (${response.status})`);
+
+               // Process the response
+               const result = await response.json();
+               if (!response.ok) throw new Error(result.error || `API call failed (${response.status})`);
 
                modelResponseText = result.response;
-               if (!modelResponseText) {
-                   throw new Error("API returned an empty response.");
-               }
-               const newModelMessage: ConversationMessage = { role: 'model', content: modelResponseText };
+               if (!modelResponseText) throw new Error("API returned an empty response.");
 
-               // Update state with the model's response
+               // --- Update UI with Success ---
+               const newModelMessage: ConversationMessage = { role: 'model', content: modelResponseText };
                updateSlotState(prev => ({
                    ...prev,
-                   response: modelResponseText, // Keep track of the latest response separately if needed
+                   response: modelResponseText, // Store the latest response text
                    error: null,
                    loading: false,
-                   // Append the model message to the history that already includes the user message
+                   // Append model message to the history that already contains the user message
                    conversationHistory: [...historyToSend, newModelMessage]
                }));
 
-               // Append the turn (user + model) to the database if it's an existing chat
+               // --- Append to DB (only for existing chats) ---
                if (currentInteractionId && modelResponseText) {
                    console.log(`Attempting to append turn to DB for interaction ${currentInteractionId}, slot ${slotNumber}`);
                    fetch('/api/append-conversation', {
@@ -387,81 +418,96 @@
                        body: JSON.stringify({
                            interactionId: currentInteractionId,
                            slotNumber: slotNumber,
-                           newUserMessage: newUserMessage, // The user message that triggered this
-                           newModelMessage: newModelMessage // The model's response
+                           newUserMessage: newUserMessage,
+                           newModelMessage: newModelMessage
                        })
                    })
                    .then(async appendResponse => {
-                       if (!appendResponse.ok) { const appendError = await appendResponse.json().catch(() => ({})); console.error(`Failed to append conversation turn for slot ${slotNumber}:`, appendError.error || `Status ${appendResponse.status}`); }
-                       else { console.log(`Successfully appended turn for slot ${slotNumber} to interaction ${currentInteractionId}`); }
+                       if (!appendResponse.ok) {
+                           const appendError = await appendResponse.json().catch(() => ({}));
+                           console.error(`Failed to append conversation turn for slot ${slotNumber}:`, appendError.error || `Status ${appendResponse.status}`);
+                       } else {
+                           console.log(`Successfully appended turn for slot ${slotNumber} to interaction ${currentInteractionId}`);
+                       }
                    })
                    .catch(appendErr => console.error(`Error calling append-conversation API for slot ${slotNumber}:`, appendErr));
                }
            } catch (error: any) {
-                // Keep the user message in history, but show error and stop loading
+               // --- Update UI with Error ---
+                console.error(`Error in callApiForSlot (Slot ${slotNumber}, Model: ${modelString}):`, error);
                 updateSlotState(prev => ({
                     ...prev,
-                    response: null, // Clear any previous response
-                    error: error.message || 'Unknown error',
+                    response: null, // Clear response on error
+                    error: error.message || 'Unknown error occurred',
                     loading: false,
                     // Keep history including the user message that failed
                     conversationHistory: historyToSend
                 }));
            }
-       }, []); // Keep dependencies minimal if possible
+       }, []); // Dependencies: none, relies on passed arguments
 
    // --- Handle Processing New Prompt / Main Follow-up ---
    const handleProcessText = useCallback(async () => {
      const currentInput = mainInputText.trim();
+     // Get only slots that have a valid model configured
      const activeSlots = slotStates.filter(s => s.modelName);
+     // Prevent processing if no input, not logged in, loading, no active slots, or UI locked
      if (currentInput === '' || !user || isAuthLoading || settingsLoading || activeSlots.length === 0 || uiLocked) return;
 
+     // Determine if this is the very first prompt of a new chat session
      const isFirstPromptOfChat = !selectedHistoryId;
+
      if (isFirstPromptOfChat) {
-         setCurrentChatPrompt(currentInput);
-         setNeedsLogging(true); // Mark that this interaction needs logging after responses
-         // Reset conversation history for all active slots for a new chat
+         setCurrentChatPrompt(currentInput); // Store the initial prompt text
+         setNeedsLogging(true); // Flag that this initial interaction needs to be logged later
+         // For a new chat, ensure all active slots start with empty history
          setSlotStates(prevStates => prevStates.map(s => s.modelName ? { ...s, conversationHistory: [] } : s));
      } else {
          setNeedsLogging(false); // Not the first prompt, no initial logging needed
      }
 
-     setLastSubmittedPrompt(currentInput);
-     setShowPanels(true);
-     if (mainInputRef.current) mainInputRef.current.blur();
-     setMainInputText(''); // Clear main input
+     setLastSubmittedPrompt(currentInput); // Track the submitted text
+     setShowPanels(true); // Ensure panels are visible
+     if (mainInputRef.current) mainInputRef.current.blur(); // Unfocus main input
+     setMainInputText(''); // Clear main input field
 
-     // Reset loading/error/response states for all slots before making calls
-     setSlotStates(prevStates => prevStates.map(s => ({ ...s, loading: false, response: null, error: null })));
+     // Reset loading/error/response states for *all* slots before making new calls
+     // Keep existing conversation history for follow-up calls
+     setSlotStates(prevStates => prevStates.map(s => ({
+         ...s,
+         loading: false, // Reset loading state
+         response: null, // Clear previous response
+         error: null     // Clear previous error
+     })));
 
      console.log(`Home Page: Processing ${isFirstPromptOfChat ? 'initial' : 'follow-up'} prompt: "${currentInput}" for ${activeSlots.length} active slots`);
 
-     const currentInteractionIdForUpdate = selectedHistoryId; // Use the existing ID for updates
-     const stateForCalls = [...slotStates]; // Capture current state
+     // Get the current interaction ID (null if it's a new chat)
+     const currentInteractionIdForUpdate = selectedHistoryId;
+     // Capture the state *before* initiating calls to pass the correct history
+     const stateForCalls = [...slotStates];
 
-     // Use Promise.allSettled to wait for all calls to start, but don't block UI entirely
+     // Initiate API calls for all *active* slots concurrently
      const promises = stateForCalls.map((slotState, index) => {
-         if (slotState.modelName) {
-             // History for the call: empty if first prompt, otherwise the current history
+         if (slotState.modelName) { // Only call for slots with a model
+             // Determine history: empty for first prompt, current history otherwise
              const historyForCall = isFirstPromptOfChat ? [] : slotState.conversationHistory;
              return callApiForSlot(
-                 index,
+                 index, // 0-based index
                  slotState.modelName,
                  currentInput,
                  historyForCall,
-                 currentInteractionIdForUpdate // Pass the ID for potential DB updates
+                 currentInteractionIdForUpdate // Pass the chat ID for DB updates
              );
          }
          return Promise.resolve(); // Resolve immediately for inactive slots
      });
 
-     // We don't necessarily need to wait for all promises here,
-     // as `callApiForSlot` updates the state individually.
-     // But logging that initiation is complete can be useful.
+     // Use Promise.allSettled to know when all call *initiations* are done
      Promise.allSettled(promises).then(() => {
          console.log("Home Page: All main API call initiations complete.");
-         // Note: Logging of the *initial* interaction happens in the useEffect hook
-         // triggered by `needsLogging` and all `loading` states becoming false.
+         // Actual logging of the initial interaction happens in the useEffect hook
+         // after all slots finish loading (`needsLogging` is true).
      });
 
    }, [ mainInputText, user, isAuthLoading, settingsLoading, selectedHistoryId, slotStates, callApiForSlot, uiLocked ]);
@@ -469,14 +515,17 @@
 
      // --- Handle Individual Follow-up Replies ---
      const handleReplyToSlot = useCallback((slotIndex: number) => {
-         if (uiLocked) return;
+         if (uiLocked) return; // Prevent action if UI is locked
          const targetState = slotStates[slotIndex];
+         // Exit if slot doesn't exist
          if (!targetState) return;
 
          const followUpPrompt = targetState.followUpInput.trim();
          // Ensure a chat is selected (cannot send individual reply on first prompt)
+         // Ensure model exists and prompt is not empty
          if (!followUpPrompt || !targetState.modelName || !user || !selectedHistoryId) {
              if (!selectedHistoryId) console.warn("Cannot send individual reply: No chat selected.");
+             if (!targetState.modelName) console.warn(`Cannot send reply to Slot ${slotIndex+1}: No model configured.`);
              return;
          }
 
@@ -484,14 +533,14 @@
          setLastSubmittedPrompt(followUpPrompt); // Track last submitted text
          setNeedsLogging(false); // Individual replies don't trigger initial logging
 
-         // Clear the follow-up input for this specific slot
+         // Clear the follow-up input for this specific slot immediately
          setSlotStates(prevStates =>
              prevStates.map((state, index) =>
                  index === slotIndex ? { ...state, followUpInput: '' } : state
              )
          );
 
-         // Call the API for this specific slot
+         // Call the API for this specific slot, passing its current history
          callApiForSlot(
              slotIndex,
              targetState.modelName,
@@ -504,11 +553,18 @@
 
    // --- Determine Overall UI State ---
    const isProcessingAny = slotStates.some(slot => slot.loading);
+   // User can interact if logged in, not loading auth/settings, and UI not locked
    const canInteract = !!user && !isAuthLoading && !settingsLoading && !uiLocked;
+   // Check if there's at least one slot configured with a model name
    const hasActiveConfiguredSlots = slotStates.some(s => s.modelName);
 
    // --- Helper to get Display Name ---
-   const getModelDisplayName = (modelString: string | null): string => { if (!modelString) return "Slot Empty"; return modelString; };
+   const getModelDisplayName = (modelString: string | null): string => {
+       if (!modelString) return "Slot Empty";
+       // Optional: Shorten display name if needed, e.g., remove provider prefix
+       // return modelString.split(': ')[1] || modelString;
+       return modelString;
+    };
 
    // --- Dynamic Grid Class ---
    const getGridColsClass = (count: number): string => {
@@ -528,11 +584,22 @@
    return (
      <div className="flex h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 overflow-hidden">
        {/* History Sidebar */}
-       <HistorySidebar history={history} historyLoading={historyLoading || isAuthLoading} historyError={historyError} selectedHistoryId={selectedHistoryId} handleHistoryClick={handleHistoryClick} fetchHistory={fetchHistory} onUpdateTitle={handleUpdateTitle} onDeleteItem={handleDeleteItem} isLoggedIn={!!user} handleNewChat={handleNewChat} />
+       <HistorySidebar
+            history={history}
+            historyLoading={historyLoading || isAuthLoading}
+            historyError={historyError}
+            selectedHistoryId={selectedHistoryId}
+            handleHistoryClick={handleHistoryClick}
+            fetchHistory={fetchHistory}
+            onUpdateTitle={handleUpdateTitle}
+            onDeleteItem={handleDeleteItem}
+            isLoggedIn={!!user}
+            handleNewChat={handleNewChat}
+        />
        {/* Main Content Area */}
        <main className="relative flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
-         {/* Loading Overlay ONLY for transitions/auth/settings load */}
-         {(uiLocked || (settingsLoading && !selectedHistoryId) || isAuthLoading) && ( // Show settings loading only if not viewing history
+         {/* Loading Overlay */}
+         {(uiLocked || (settingsLoading && !selectedHistoryId) || isAuthLoading) && (
              <div className="absolute inset-0 bg-gray-400/30 dark:bg-gray-900/50 flex items-center justify-center z-50">
                  <svg className="animate-spin h-8 w-8 text-blue-600 dark:text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -547,8 +614,10 @@
               {user && !isAuthLoading && ( <Link href="/settings" className="text-sm font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 hover:underline whitespace-nowrap"> ⚙️ Settings </Link> )}
               {!user && !isAuthLoading && <div className="h-5"></div>} {/* Placeholder */}
           </div>
+
          {/* Login Prompt */}
          {!user && !isAuthLoading && ( <div className="w-full max-w-3xl mb-6 self-center p-4 bg-yellow-100 border rounded-md text-center text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-100 dark:border-yellow-700"> Please <Link href="/auth" className="font-semibold underline hover:text-yellow-900 dark:hover:text-yellow-200">Sign In or Sign Up</Link> to use the AI comparison tool. </div> )}
+
          {/* Main Input Area */}
          <div className="w-full max-w-3xl mb-4 self-center flex-shrink-0 px-1">
            <textarea
@@ -565,33 +634,33 @@
              }
              className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 shadow-sm disabled:bg-gray-200 dark:disabled:bg-gray-700/50 disabled:cursor-not-allowed bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 resize-none overflow-y-auto min-h-[44px] max-h-[128px]" style={{ height: 'auto' }} onInput={(e) => { const target = e.target as HTMLTextAreaElement; target.style.height = 'auto'; target.style.height = `${target.scrollHeight}px`; }}
              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !isProcessingAny && mainInputText.trim() !== '' && canInteract && hasActiveConfiguredSlots) { e.preventDefault(); handleProcessText(); } }}
-             disabled={!canInteract || isProcessingAny || !hasActiveConfiguredSlots}
+             disabled={!canInteract || isProcessingAny || !hasActiveConfiguredSlots} // Disable if cannot interact OR no slots configured
            />
            <button
              onClick={handleProcessText}
              className={`w-full mt-2 p-3 text-white rounded-md font-semibold transition-colors duration-200 ${ !canInteract || isProcessingAny || mainInputText.trim() === '' || !hasActiveConfiguredSlots ? 'bg-gray-400 dark:bg-gray-600 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600' }`}
-             disabled={!canInteract || isProcessingAny || mainInputText.trim() === '' || !hasActiveConfiguredSlots}
+             disabled={!canInteract || isProcessingAny || mainInputText.trim() === '' || !hasActiveConfiguredSlots} // Disable if cannot interact OR no slots configured
            >
              {isProcessingAny ? 'Processing...' : (selectedHistoryId) ? 'Send Follow-up to All' : 'Send Initial Prompt'}
            </button>
          </div>
 
          {/* AI Response Panels Section */}
-                {/* Show panels if user logged in, not loading settings, AND (either panels explicitly shown OR there's a selected history item) AND there are slots (even empty ones if history selected) */}
+                {/* Show panels if: user logged in, settings loaded, AND (panels explicitly shown OR history selected) AND there are slots defined */}
                 {user && !settingsLoading && (showPanels || selectedHistoryId) && slotStates.length > 0 && (
                     <div className={`w-full max-w-7xl grid ${getGridColsClass(slotStates.length)} gap-4 self-center flex-grow px-1 pb-4 overflow-hidden`}>
                         {slotStates.map((slotState, index) => {
-                            const colors = PANEL_COLORS[index % PANEL_COLORS.length];
+                            const colors = PANEL_COLORS[index % PANEL_COLORS.length]; // Get color scheme for the panel
                             const isSlotProcessing = slotState.loading;
-                            const hasModel = !!slotState.modelName; // Check if a model is assigned
+                            const hasModel = !!slotState.modelName; // Check if a model is assigned in the current state
 
-                            // Render panel only if it has a model OR if we are showing panels generally (e.g., for a selected history item even if a slot was empty then)
-                            // This ensures we see the structure consistent with the history item.
-                            // If it's a new chat (`!selectedHistoryId`), only render if `hasModel`.
+                            // Determine if the panel should be rendered:
+                            // - Always render if viewing history (selectedHistoryId is true) to show past state.
+                            // - If it's a new chat (!selectedHistoryId), only render if a model is configured (`hasModel`).
                             if (!selectedHistoryId && !hasModel) return null;
 
                             return (
-                                <div key={`panel-${index}`} className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] ${colors.border} overflow-hidden ${!hasModel ? 'opacity-60' : ''}`}> {/* Don't disable pointer events, allow seeing empty history */}
+                                <div key={`panel-${index}`} className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] ${colors.border} overflow-hidden ${!hasModel ? 'opacity-60' : ''}`}>
                                     {/* Panel Header */}
                                     <h2 className={`text-lg md:text-xl font-semibold p-4 pb-2 ${colors.text} flex-shrink-0 truncate border-b dark:border-gray-700`} title={slotState.modelName || `Slot ${index + 1} (Empty)`}>
                                         {getModelDisplayName(slotState.modelName)} (Slot {index + 1})
@@ -599,31 +668,34 @@
 
                                     {/* Conversation Area */}
                                     <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
+                                        {/* Message shown if slot is empty in current settings AND has no history */}
                                         {!hasModel && slotState.conversationHistory.length === 0 && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty in settings.</p>}
-                                        {/* Render conversation history regardless of whether the model is currently set, to show past interactions */}
+
+                                        {/* Render conversation history */}
                                         {slotState.conversationHistory && slotState.conversationHistory.map((msg, msgIndex) => (
                                             <div key={`${selectedHistoryId || 'new'}-${index}-${msgIndex}`}
-                                                 className={`max-w-none p-2 rounded-md max-w-[90%] whitespace-pre-wrap ${
+                                                 // **MODIFIED STYLING HERE** - Applied prose and specific background/text colors
+                                                 className={`prose prose-sm dark:prose-invert max-w-none p-2 rounded-md max-w-[90%] ${
                                                      msg.role === 'user'
-                                                     ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' // User messages align right
-                                                     : `${colors.bg} ${colors.text.split(' ')[0]} dark:${colors.text.split(' ')[1]} mr-auto` // Model messages align left
+                                                     ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' // User message specific style
+                                                     : `${colors.bg} text-gray-900 dark:text-gray-100 mr-auto` // Model message uses panel's bg color + default text
                                                  }`}>
-                                                <ReactMarkdown
-                                                    remarkPlugins={[remarkGfm]}
-                                                    components={{ p: ({node, ...props}) => <p className="mb-0" {...props} /> }}
-                                                >
+                                                {/* ReactMarkdown renders the content */}
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                                     {msg.content}
                                                 </ReactMarkdown>
                                             </div>
                                         ))}
-                                        {/* Loading/Error indicators - only show if a model is assigned */}
+
+                                        {/* Loading/Error indicators - only show if a model is currently assigned */}
                                         {hasModel && isSlotProcessing && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
                                         {hasModel && slotState.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slotState.error}</p>}
-                                         {/* Show if slot was empty in history */}
+
+                                         {/* Message shown if slot was empty in history but has conversation data */}
                                         {!hasModel && slotState.conversationHistory.length > 0 && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4 text-xs">Model was not used in this slot for this history item.</p>}
                                     </div>
 
-                                    {/* Follow-up Input Area - Show only if model exists AND a chat is active */}
+                                    {/* Follow-up Input Area - Show only if model exists AND a chat is active (history selected) */}
                                     {hasModel && selectedHistoryId && (
                                         <div className="mt-auto p-4 pt-2 border-t dark:border-gray-600 flex items-end space-x-2 flex-shrink-0">
                                             <textarea
@@ -652,7 +724,8 @@
                     </div>
                 )}
 
-                {/* Placeholder when no panels should be shown */}
+                {/* Placeholder Section */}
+                {/* Show placeholder if user is logged in, settings loaded, but no panels should be shown yet */}
                 {user && !settingsLoading && !(showPanels || selectedHistoryId) && (
                      <div className="flex-grow flex items-center justify-center text-gray-500 dark:text-gray-400 text-center px-4">
                          {
@@ -661,19 +734,20 @@
                          }
                      </div>
                  )}
-                 {/* Placeholder if logged in, not loading, but slots array is empty after fetch (means no config) */}
+                 {/* Show placeholder if logged in, settings loaded, but no models are configured AT ALL */}
                  {user && !settingsLoading && !hasActiveConfiguredSlots && !selectedHistoryId && (
                      <div className="flex-grow flex items-center justify-center text-gray-500 dark:text-gray-400 text-center px-4">
                          No active AI models configured. Please visit <Link href="/settings" className="underline text-blue-500 hover:text-blue-600">Settings</Link>.
                      </div>
                  )}
-                 {/* Placeholder if not logged in and not loading auth */}
+                 {/* Placeholder if not logged in */}
                  {!user && !isAuthLoading && (
                       <div className="flex-grow flex items-center justify-center text-gray-500 dark:text-gray-400 text-center px-4">
-                         {/* Message handled by the yellow box above */}
+                         {/* Login message is handled by the yellow box above */}
                       </div>
                  )}
        </main>
      </div>
    );
  }
+ 

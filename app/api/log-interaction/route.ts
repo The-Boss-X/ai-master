@@ -9,20 +9,23 @@ import type { NextRequest } from 'next/server';
 // Ensure dynamic execution
 export const dynamic = 'force-dynamic';
 
+// Structure for a single message (mirrors frontend/type definition)
+interface ConversationMessage {
+  role: 'user' | 'model';
+  content: string;
+}
+
 // Define the expected structure of the incoming request body from app/page.tsx
-// Includes the model used for each slot
+// Now includes the initial conversation turn for each slot
 interface LogInteractionPayload {
-  prompt: string;
+  prompt: string; // The initial prompt
   title?: string | null;
-  slot_1_model_used?: string | null; // Model identifier string (e.g., "ChatGPT: gpt-4o") used in slot 1
-  slot_1_response?: string | null;
-  slot_1_error?: string | null;
-  slot_2_model_used?: string | null; // Model identifier string used in slot 2
-  slot_2_response?: string | null;
-  slot_2_error?: string | null;
-  slot_3_model_used?: string | null; // Model identifier string used in slot 3
-  slot_3_response?: string | null;
-  slot_3_error?: string | null;
+  slot_1_model_used?: string | null;
+  slot_1_conversation?: ConversationMessage[] | null; // Initial turn(s) for slot 1
+  slot_2_model_used?: string | null;
+  slot_2_conversation?: ConversationMessage[] | null; // Initial turn(s) for slot 2
+  slot_3_model_used?: string | null;
+  slot_3_conversation?: ConversationMessage[] | null; // Initial turn(s) for slot 3
 }
 
 
@@ -66,15 +69,12 @@ export async function POST(req: NextRequest) {
     const {
       prompt,
       title,
-      slot_1_model_used, // Get the model used from the payload
-      slot_1_response,
-      slot_1_error,
-      slot_2_model_used, // Get the model used from the payload
-      slot_2_response,
-      slot_2_error,
-      slot_3_model_used, // Get the model used from the payload
-      slot_3_response,
-      slot_3_error,
+      slot_1_model_used,
+      slot_1_conversation, // Get the initial conversation array
+      slot_2_model_used,
+      slot_2_conversation, // Get the initial conversation array
+      slot_3_model_used,
+      slot_3_conversation, // Get the initial conversation array
     } = parsedBody;
 
     if (!prompt) {
@@ -83,27 +83,26 @@ export async function POST(req: NextRequest) {
     }
 
     // 4. Prepare data object for inserting into the 'interactions' table
-    // Mapping received data to the database columns, including the NEW model columns
+    // Mapping received data to the database columns, including the NEW jsonb columns
     const interactionDataForSupabase = {
       // user_id: userId, // Handled by RLS/default
-      prompt: prompt,
+      prompt: prompt, // Store the initial prompt
       title: title || prompt.substring(0, 50) + (prompt.length > 50 ? '...' : ''),
-      // Map the model used to the new columns you added
-      slot_1_model: slot_1_model_used || null, // Save to slot_1_model column
-      slot_1_response: slot_1_response || null,
-      slot_1_error: slot_1_error || null,
-      slot_2_model: slot_2_model_used || null, // Save to slot_2_model column
-      slot_2_response: slot_2_response || null,
-      slot_2_error: slot_2_error || null,
-      slot_3_model: slot_3_model_used || null, // Save to slot_3_model column
-      slot_3_response: slot_3_response || null,
-      slot_3_error: slot_3_error || null,
+      // Save the model used
+      slot_1_model_used: slot_1_model_used || null,
+      slot_2_model_used: slot_2_model_used || null,
+      slot_3_model_used: slot_3_model_used || null,
+      // Save the initial conversation arrays (should contain user prompt + model response/error)
+      slot_1_conversation: slot_1_conversation || null,
+      slot_2_conversation: slot_2_conversation || null,
+      slot_3_conversation: slot_3_conversation || null,
       // created_at is handled by Supabase default
     };
     console.log(`Log Interaction: Data prepared for 'interactions' insert for user ${userId}:`, JSON.stringify(interactionDataForSupabase, null, 2));
 
 
     // 5. Insert data ONLY into the 'interactions' table
+    // Ensure RLS allows insert and user_id matches auth.uid()
     const { data, error: insertError } = await supabase
       .from('interactions') // Target the interactions table
       .insert([interactionDataForSupabase]) // Insert the prepared interaction data
@@ -116,6 +115,10 @@ export async function POST(req: NextRequest) {
            console.error("!!! Potential schema cache issue or mismatch between code and DB schema for 'interactions' table !!!");
            return NextResponse.json({ success: false, error: `Database schema error: ${insertError.message}` }, { status: 500 });
       }
+       if (insertError.message.includes('invalid input syntax for type json')) {
+           console.error("!!! Data being sent for a _conversation column is not valid JSON !!!");
+           return NextResponse.json({ success: false, error: `Invalid data format for conversation history.` }, { status: 400 });
+       }
       if (insertError.code === '42501') { // RLS permission denied
         return NextResponse.json({ success: false, error: 'Permission denied to log interaction.' }, { status: 403 });
       }

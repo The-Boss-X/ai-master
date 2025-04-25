@@ -1,20 +1,21 @@
 // components/HistorySidebar.tsx
 import React, { useState, useEffect } from 'react';
-// Import the type definition matching the NEW database schema
+// Ensure this path points to your type definition file based on the NEW schema
 import type { InteractionHistoryItem } from '../types/InteractionHistoryItem';
 import Link from 'next/link'; // For login prompt
 
-// Props interface using the updated InteractionHistoryItem type
+// Props interface including the new handler
 interface HistorySidebarProps {
-  history: InteractionHistoryItem[]; // Expects items with slot_ fields now
-  historyLoading: boolean; // Loading state for history fetch
-  historyError: string | null; // Error message from history fetch
-  selectedHistoryId: string | null; // ID of the currently selected history item
-  handleHistoryClick: (item: InteractionHistoryItem) => void; // Function to handle clicking an item
-  fetchHistory: () => void; // Function to trigger a refresh of the history list
-  onUpdateTitle: (id: string, newTitle: string) => Promise<boolean>; // Function to update item title
-  onDeleteItem: (id: string) => Promise<boolean>; // Function to delete an item
-  isLoggedIn: boolean; // Flag indicating if the user is currently logged in
+  history: InteractionHistoryItem[];
+  historyLoading: boolean;
+  historyError: string | null;
+  selectedHistoryId: string | null;
+  handleHistoryClick: (item: InteractionHistoryItem) => void;
+  fetchHistory: () => void;
+  onUpdateTitle: (id: string, newTitle: string) => Promise<boolean>;
+  onDeleteItem: (id: string) => Promise<boolean>;
+  isLoggedIn: boolean;
+  handleNewChat: () => void; // Add prop for the new chat handler
 }
 
 const HistorySidebar: React.FC<HistorySidebarProps> = ({
@@ -27,6 +28,7 @@ const HistorySidebar: React.FC<HistorySidebarProps> = ({
   onUpdateTitle,
   onDeleteItem,
   isLoggedIn,
+  handleNewChat, // Destructure the new prop
 }) => {
   // State for the edit title modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -135,7 +137,31 @@ const HistorySidebar: React.FC<HistorySidebarProps> = ({
     <>
       {/* Sidebar Container */}
       <aside className="w-64 md:w-72 bg-white dark:bg-gray-800 p-4 border-r border-gray-200 dark:border-gray-700 overflow-y-auto flex flex-col flex-shrink-0 h-full">
-        <h2 className="text-lg font-semibold mb-4 text-gray-700 dark:text-gray-200 flex-shrink-0">History</h2>
+
+        {/* === NEW CHAT BUTTON === */}
+        <div className="mb-4 flex-shrink-0">
+           <button
+             onClick={handleNewChat} // Call the handler passed via props
+             disabled={!isLoggedIn} // Only enable if logged in
+             title={isLoggedIn ? "Start a new comparison" : "Log in to start a new chat"}
+             className={`w-full flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-indigo-500 transition-colors ${
+               isLoggedIn
+                 ? 'bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600' // Enabled style
+                 : 'bg-gray-400 dark:bg-gray-600 cursor-not-allowed' // Disabled style
+             }`}
+           >
+             {/* Plus Icon */}
+             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+             </svg>
+             New Chat
+           </button>
+         </div>
+        {/* === END NEW CHAT BUTTON === */}
+
+
+         {/* History Section Header */}
+        <h2 className="text-lg font-semibold mb-2 text-gray-700 dark:text-gray-200 flex-shrink-0 border-t dark:border-gray-700 pt-4">History</h2>
 
         {/* Loading State */}
         {historyLoading && <p className="text-gray-500 dark:text-gray-400 animate-pulse text-sm">Loading History...</p>}

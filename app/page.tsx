@@ -1,15 +1,16 @@
-/* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable react-hooks/exhaustive-deps */
 // app/page.tsx
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import Link from 'next/link'; // Import Link for navigation
-import { useRouter } from 'next/navigation'; // Can be useful
-import { useAuth } from './context/AuthContext'; // Import useAuth hook
-import type { InteractionHistoryItem } from './types/InteractionHistoryItem'; // Import the type definition
-import HistorySidebar from './components/HistorySidebar'; // Import the sidebar component
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useAuth } from './context/AuthContext';
+// Import types, including ConversationMessage
+import type { InteractionHistoryItem, ConversationMessage } from './types/InteractionHistoryItem';
+import HistorySidebar from './components/HistorySidebar';
 
 // Define the structure for data fetched from backend settings API
 interface FetchedSettings {
@@ -18,557 +19,348 @@ interface FetchedSettings {
     slot_3_model: string | null;
 }
 
-// Define structure for AI Slot state within this component
+// Define structure for AI Slot state, including conversation history
 interface AiSlotState {
     modelName: string | null;
     loading: boolean;
-    response: string | null;
+    response: string | null; // Last response text (can be derived from history)
     error: string | null;
+    followUpInput: string;
+    conversationHistory: ConversationMessage[]; // Array to store the chat history
 }
 
 export default function Home() {
-  // --- Authentication State ---
+  // --- State Hooks ---
   const { user, isLoading: isAuthLoading } = useAuth();
-
-  // --- Core Input/Output State ---
-  const [inputText, setInputText] = useState('');
-  const [processedText, setProcessedText] = useState('');
-
-  // --- Settings State ---
+  const [mainInputText, setMainInputText] = useState('');
+  const [currentChatPrompt, setCurrentChatPrompt] = useState<string | null>(null);
+  const [lastSubmittedPrompt, setLastSubmittedPrompt] = useState<string | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-
-  // --- AI Slot State ---
-  const [slot1State, setSlot1State] = useState<AiSlotState>({ modelName: null, loading: false, response: null, error: null });
-  const [slot2State, setSlot2State] = useState<AiSlotState>({ modelName: null, loading: false, response: null, error: null });
-  const [slot3State, setSlot3State] = useState<AiSlotState>({ modelName: null, loading: false, response: null, error: null });
-
-  // --- UI Control State ---
+  const initialSlotState: AiSlotState = { modelName: null, loading: false, response: null, error: null, followUpInput: '', conversationHistory: [] };
+  const [slot1State, setSlot1State] = useState<AiSlotState>({ ...initialSlotState });
+  const [slot2State, setSlot2State] = useState<AiSlotState>({ ...initialSlotState });
+  const [slot3State, setSlot3State] = useState<AiSlotState>({ ...initialSlotState });
   const [showPanels, setShowPanels] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  // --- History State ---
+  const mainInputRef = useRef<HTMLTextAreaElement>(null);
   const [history, setHistory] = useState<InteractionHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null); // Keep track of selected history
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [needsLogging, setNeedsLogging] = useState(false);
 
-  // --- Logging State ---
-  const [isLoggingComplete, setIsLoggingComplete] = useState(true);
-
-  // --- Fetch User Settings ---
-  // useCallback memoizes the function; dependencies define when it should be recreated.
-  const fetchSettings = useCallback(async () => {
-    // No need to fetch if we know the user isn't logged in
+  // --- Data Fetching Callbacks ---
+  // Fetch settings - only apply if not viewing history
+  const fetchSettings = useCallback(async (isHistorySelected: boolean) => {
     if (!user) {
-        setSlot1State(prev => ({ ...prev, modelName: null }));
-        setSlot2State(prev => ({ ...prev, modelName: null }));
-        setSlot3State(prev => ({ ...prev, modelName: null }));
+        setSlot1State(prev => ({ ...prev, modelName: null, conversationHistory: [] }));
+        setSlot2State(prev => ({ ...prev, modelName: null, conversationHistory: [] }));
+        setSlot3State(prev => ({ ...prev, modelName: null, conversationHistory: [] }));
         setSettingsLoading(false);
         return;
     }
-    setSettingsLoading(true);
-    setSettingsError(null);
+    setSettingsLoading(true); setSettingsError(null);
     try {
       const response = await fetch('/api/settings/get-settings');
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Failed to parse settings error' }));
-        if (response.status === 401) {
-            console.warn("Settings fetch unauthorized, user might be logged out.");
-            setSlot1State(prev => ({ ...prev, modelName: null }));
-            setSlot2State(prev => ({ ...prev, modelName: null }));
-            setSlot3State(prev => ({ ...prev, modelName: null }));
-        }
-        throw new Error(errorData.error || `Failed to fetch settings (${response.status})`);
-      }
+      if (!response.ok) throw new Error(`Fetch settings failed (${response.status})`);
       const data: FetchedSettings | null = await response.json();
-
-      // *** IMPORTANT FIX: Only update general settings if NO history item is selected ***
-      // This prevents overwriting the displayed history data when settings are refetched
-      // We access selectedHistoryId directly here instead of making it a dependency
-      if (!selectedHistoryId) {
+      // Only update model names if NO history item is selected
+      if (!isHistorySelected) {
           setSlot1State(prev => ({ ...prev, modelName: data?.slot_1_model || null }));
           setSlot2State(prev => ({ ...prev, modelName: data?.slot_2_model || null }));
           setSlot3State(prev => ({ ...prev, modelName: data?.slot_3_model || null }));
-          console.log("Home Page: Fetched and applied settings (no history selected):", data);
+          console.log("Home Page: Fetched and applied general settings (no history selected):", data);
       } else {
-          console.log("Home Page: Fetched settings, but history item is selected. Skipping modelName update.", data);
+           console.log("Home Page: Fetched settings, but history item selected. Skipping modelName update.", data);
       }
+    } catch (e: any) { setSettingsError(e.message); }
+    finally { setSettingsLoading(false); }
+  }, [user]); // Depend only on user
 
-    } catch (error: any) {
-      console.error("Home Page: Error fetching settings:", error);
-      setSettingsError(error.message);
-       setSlot1State(prev => ({ ...prev, modelName: null }));
-       setSlot2State(prev => ({ ...prev, modelName: null }));
-       setSlot3State(prev => ({ ...prev, modelName: null }));
-    } finally {
-      setSettingsLoading(false);
-    }
-  // *** REMOVED selectedHistoryId from dependency array ***
-  }, [user]);
-
-  // --- Fetch History ---
+  // Fetch history list
   const fetchHistory = useCallback(async () => {
-    if (isAuthLoading || !user) {
-        setHistory([]);
-        setHistoryLoading(false);
-        return;
-    }
-    setHistoryLoading(true);
-    setHistoryError(null);
-    console.log("Home Page: Fetching history...");
+    if (isAuthLoading || !user) { setHistory([]); setHistoryLoading(false); return; }
+    setHistoryLoading(true); setHistoryError(null);
     try {
       const response = await fetch('/api/get-history');
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Failed to parse history error' }));
-        if (response.status === 401) throw new Error("Unauthorized fetching history. Please log in.");
-        throw new Error(errorData.error || `Failed to fetch history: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Fetch history failed (${response.status})`);
       const data: InteractionHistoryItem[] = await response.json();
-      console.log("Home Page: History data received from API:", data ? data.length : 0, "items");
-      if (data && data.length > 0) {
-          console.log("Home Page: Structure of first history item received:", JSON.stringify(data[0], null, 2));
-      }
       data.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       setHistory(data);
-    } catch (error: any) {
-      console.error("Home Page: Error fetching history:", error);
-      setHistoryError(error.message);
-      setHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
+    } catch (e: any) { setHistoryError(e.message); setHistory([]); }
+    finally { setHistoryLoading(false); }
   }, [user, isAuthLoading]);
 
   // --- Initial Data Fetching Effect ---
-  // *** Simplified dependencies to only run on auth state changes ***
+  // Runs only when auth state is resolved (isAuthLoading is false) or user changes
   useEffect(() => {
     if (!isAuthLoading) {
-      console.log("Home Page: Auth loaded, fetching settings and history...");
-      fetchSettings();
+      console.log("Home Page: Auth loaded. Fetching initial data...");
+      // Pass the current value of selectedHistoryId directly
+      fetchSettings(!!selectedHistoryId);
       fetchHistory();
     }
-  }, [user, isAuthLoading, fetchSettings, fetchHistory]); // Keep fetch functions here as they depend on user
+  }, [user, isAuthLoading, fetchSettings, fetchHistory, selectedHistoryId]); // Include selectedHistoryId here
 
-  // --- Log Interaction to Backend ---
-  const logInteractionToSupabase = useCallback(async () => {
-    if (isLoggingComplete || !user || !processedText) {
-      setIsLoggingComplete(true);
-      return;
-    }
-    const attemptedModels = [slot1State.modelName, slot2State.modelName, slot3State.modelName].filter(Boolean);
-    if (attemptedModels.length === 0) {
-        setIsLoggingComplete(true);
-        return;
-    }
-    console.log("Home Page: Attempting to log interaction...");
+  // --- Log ONLY the Initial Interaction ---
+  const logInitialInteraction = useCallback(async (promptToLog: string, slot1Result: AiSlotState, slot2Result: AiSlotState, slot3Result: AiSlotState) => {
+    if (!user || !promptToLog) return;
+    console.log("Home Page: Attempting to log INITIAL interaction...");
     try {
+       const buildLogHistory = (prompt: string, finalSlotState: AiSlotState): ConversationMessage[] | null => {
+          if (!prompt) return null;
+          const logHistory: ConversationMessage[] = [{ role: 'user', content: prompt }];
+          if (finalSlotState.response) { logHistory.push({ role: 'model', content: finalSlotState.response }); }
+          return logHistory.length > 0 ? logHistory : null;
+       };
       const dataToLog = {
-        prompt: processedText,
-        title: processedText.substring(0, 50) + (processedText.length > 50 ? '...' : ''),
-        slot_1_model_used: slot1State.modelName,
-        slot_1_response: slot1State.response,
-        slot_1_error: slot1State.error,
-        slot_2_model_used: slot2State.modelName,
-        slot_2_response: slot2State.response,
-        slot_2_error: slot2State.error,
-        slot_3_model_used: slot3State.modelName,
-        slot_3_response: slot3State.response,
-        slot_3_error: slot3State.error,
+        prompt: promptToLog, title: promptToLog.substring(0, 50) + (promptToLog.length > 50 ? '...' : ''),
+        slot_1_model_used: slot1Result.modelName, slot_2_model_used: slot2Result.modelName, slot_3_model_used: slot3Result.modelName,
+        slot_1_conversation: buildLogHistory(promptToLog, slot1Result),
+        slot_2_conversation: buildLogHistory(promptToLog, slot2Result),
+        slot_3_conversation: buildLogHistory(promptToLog, slot3Result),
       };
-      console.log("Home Page: Sending data to /api/log-interaction:", dataToLog);
-
-      const response = await fetch('/api/log-interaction', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dataToLog),
-      });
-
-      const result = await response.json().catch(() => ({ success: false, error: 'Invalid JSON response from log API' }));
-
-      if (!response.ok || !result?.success || !result.loggedData?.[0]) {
-        const errorMsg = result?.error || `Failed to log interaction (${response.status})`;
-        console.error('Home Page: Failed to log interaction:', errorMsg);
-      } else {
+      const response = await fetch('/api/log-interaction', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(dataToLog) });
+      const result = await response.json().catch(() => ({ success: false, error: 'Invalid JSON response' }));
+      if (!response.ok || !result?.success || !result.loggedData?.[0]) console.error('Home Page: Failed to log interaction:', result?.error);
+      else {
         const newLogEntry = result.loggedData[0] as InteractionHistoryItem;
-        if (newLogEntry?.id && newLogEntry?.created_at && newLogEntry?.prompt) {
-          setHistory(prevHistory => [newLogEntry, ...prevHistory]);
-          setSelectedHistoryId(newLogEntry.id); // Select the new entry
-          console.log("Home Page: Interaction logged successfully, ID:", newLogEntry.id);
-        } else {
-          console.warn("Home Page: Logged data from API was incomplete, refetching history.", newLogEntry);
-          fetchHistory();
-        }
+        if (newLogEntry?.id) { setHistory(prev => [newLogEntry, ...prev]); setSelectedHistoryId(newLogEntry.id); }
+        else fetchHistory(); // Refetch if needed
       }
-    } catch (error) {
-      console.error('Home Page: Error calling logging API:', error);
-    } finally {
-      setIsLoggingComplete(true);
-    }
-  }, [
-      user, processedText, isLoggingComplete, fetchHistory,
-      slot1State.modelName, slot1State.response, slot1State.error,
-      slot2State.modelName, slot2State.response, slot2State.error,
-      slot3State.modelName, slot3State.response, slot3State.error
-  ]);
+    } catch (error) { console.error('Home Page: Error calling logging API:', error); }
+  }, [ user, fetchHistory ]);
 
-  // --- useEffect to Trigger Logging After AI Calls Complete ---
+  // --- useEffect to Trigger Logging After Initial AI Calls Complete ---
   useEffect(() => {
     const allSlotsFinished = !slot1State.loading && !slot2State.loading && !slot3State.loading;
-    if (allSlotsFinished && processedText && !isLoggingComplete) {
-      logInteractionToSupabase();
+    if (allSlotsFinished && needsLogging && currentChatPrompt) {
+      console.log("Home Page: All slots finished, triggering log for initial interaction.");
+      logInitialInteraction(currentChatPrompt, slot1State, slot2State, slot3State);
+      setNeedsLogging(false); // Reset flag
     }
-  }, [
-      slot1State.loading, slot2State.loading, slot3State.loading,
-      processedText, isLoggingComplete, logInteractionToSupabase
-  ]);
+  }, [ slot1State.loading, slot2State.loading, slot3State.loading, needsLogging, currentChatPrompt, logInitialInteraction, slot1State, slot2State, slot3State ]);
+
 
   // --- Handle Clicking a History Item ---
   const handleHistoryClick = (item: InteractionHistoryItem) => {
     if (!user) return;
     console.log("Home Page: handleHistoryClick triggered for item:", item.id);
-    console.log("Home Page: Clicked history item data:", JSON.stringify(item, null, 2));
+    console.log("Home Page: Clicked history item data from API:", JSON.stringify(item, null, 2));
 
-    setProcessedText(item.prompt);
+    // Set the state *synchronously* based on the clicked item
+    setCurrentChatPrompt(item.prompt);
+    setLastSubmittedPrompt(null);
+    setMainInputText('');
+    setNeedsLogging(false); // Not a new interaction
 
-    // Use the correct field names from the InteractionHistoryItem type
-    const newState1: AiSlotState = {
-        modelName: item.slot_1_model || null, // Use the model saved in history
-        response: item.slot_1_response || null,
-        error: item.slot_1_error || null,
-        loading: false
-    };
-    const newState2: AiSlotState = {
-        modelName: item.slot_2_model || null, // Use the model saved in history
-        response: item.slot_2_response || null,
-        error: item.slot_2_error || null,
-        loading: false
-    };
-    const newState3: AiSlotState = {
-        modelName: item.slot_3_model || null, // Use the model saved in history
-        response: item.slot_3_response || null,
-        error: item.slot_3_error || null,
-        loading: false
-    };
+    // Directly use the conversation data from the item
+    const history1 = item.slot_1_conversation || [];
+    const history2 = item.slot_2_conversation || [];
+    const history3 = item.slot_3_conversation || [];
 
-    console.log("Home Page: Preparing to set slot 1 state from history:", newState1);
-    console.log("Home Page: Preparing to set slot 2 state from history:", newState2);
-    console.log("Home Page: Preparing to set slot 3 state from history:", newState3);
-
-    // Update the state for all three slots based on the history item
-    setSlot1State(newState1);
-    setSlot2State(newState2);
-    setSlot3State(newState3);
+    setSlot1State({
+        modelName: item.slot_1_model_used || null,
+        response: history1.findLast(m => m.role === 'model')?.content || null,
+        error: null, loading: false, followUpInput: '',
+        conversationHistory: history1
+    });
+    setSlot2State({
+        modelName: item.slot_2_model_used || null,
+        response: history2.findLast(m => m.role === 'model')?.content || null,
+        error: null, loading: false, followUpInput: '',
+        conversationHistory: history2
+    });
+    setSlot3State({
+        modelName: item.slot_3_model_used || null,
+        response: history3.findLast(m => m.role === 'model')?.content || null,
+        error: null, loading: false, followUpInput: '',
+        conversationHistory: history3
+    });
 
     setShowPanels(true);
-    setInputText('');
-    setSelectedHistoryId(item.id); // Set the selected ID *after* setting slot state
-    setIsLoggingComplete(true);
-    console.log("Home Page: handleHistoryClick finished setting state for item:", item.id);
+    setSelectedHistoryId(item.id); // Set selected ID *last*
+    console.log(`Home Page: State updated for history item ${item.id}. History lengths: S1=${history1.length}, S2=${history2.length}, S3=${history3.length}`);
   };
 
-   // --- Handle Update Title (Passed to Sidebar) ---
+   // --- Handle "New Chat" Button Click ---
+   const handleNewChat = useCallback(() => {
+     if (!user) return;
+     console.log("Home Page: Starting New Chat");
+     setSelectedHistoryId(null); setCurrentChatPrompt(null); setLastSubmittedPrompt(null);
+     setMainInputText(''); setShowPanels(false); setNeedsLogging(false);
+     setSlot1State({ ...initialSlotState }); setSlot2State({ ...initialSlotState }); setSlot3State({ ...initialSlotState });
+     fetchSettings(false); // Fetch settings for the new chat state (pass false explicitly)
+     mainInputRef.current?.focus();
+   }, [user, fetchSettings]);
+
+   // --- Handle Update Title & Delete Item ---
    const handleUpdateTitle = useCallback(async (id: string, newTitle: string): Promise<boolean> => {
        if (!user) return false;
-       console.log(`Update title requested for ID: ${id} to "${newTitle}"`);
-       try {
-           const response = await fetch('/api/update-history-title', {
-               method: 'PATCH',
-               headers: { 'Content-Type': 'application/json' },
-               body: JSON.stringify({ id, title: newTitle }),
-           });
-           const result = await response.json();
-           if (!response.ok || !result.success) {
-               throw new Error(result.error || 'Failed to update title');
-           }
-           setHistory(prev => prev.map(item => item.id === id ? { ...item, title: newTitle } : item));
-           return true;
-       } catch (error: any) {
-           console.error("Error updating title:", error);
-           setHistoryError(`Update failed: ${error.message}`);
-           return false;
-       }
+       try { const response = await fetch('/api/update-history-title', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, title: newTitle }) }); const result = await response.json(); if (!response.ok || !result.success) throw new Error(result.error || 'Failed to update title'); setHistory(prev => prev.map(item => item.id === id ? { ...item, title: newTitle } : item)); return true; } catch (error: any) { setHistoryError(`Update failed: ${error.message}`); return false; }
    }, [user]);
-
-   // --- Handle Delete Item (Passed to Sidebar) ---
    const handleDeleteItem = useCallback(async (id: string): Promise<boolean> => {
        if (!user) return false;
-       console.log(`Delete item requested for ID: ${id}`);
-       try {
-           const response = await fetch('/api/delete-history-item', {
-               method: 'DELETE',
-               headers: { 'Content-Type': 'application/json' },
-               body: JSON.stringify({ id }),
-           });
-           const result = await response.json();
-           if (!response.ok || !result.success) {
-               throw new Error(result.error || 'Failed to delete item');
-           }
-           setHistory(prev => prev.filter(item => item.id !== id));
-           if (selectedHistoryId === id) {
-               setSelectedHistoryId(null);
-               setProcessedText('');
-               setShowPanels(false);
-               // Reset slot states to reflect general settings or empty
-               fetchSettings(); // Refetch general settings after deleting selected item
-           }
-           return true;
-       } catch (error: any) {
-           console.error("Error deleting item:", error);
-           setHistoryError(`Delete failed: ${error.message}`);
-           return false;
-       }
-   // Include fetchSettings in dependency array as it's called inside
-   }, [user, selectedHistoryId, fetchSettings]);
+       try { const response = await fetch('/api/delete-history-item', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }); const result = await response.json(); if (!response.ok || !result.success) throw new Error(result.error || 'Failed to delete item'); setHistory(prev => prev.filter(item => item.id !== id)); if (selectedHistoryId === id) handleNewChat(); return true; } catch (error: any) { setHistoryError(`Delete failed: ${error.message}`); return false; }
+   }, [user, selectedHistoryId, handleNewChat]);
 
-  // --- Handle Processing New Prompt Submission ---
-  const handleProcessText = async () => {
-    const currentInput = inputText.trim();
-    if (currentInput === '' || !user || isAuthLoading || settingsLoading) {
-      if (!user && !isAuthLoading) console.log("User not logged in.");
-      return;
-    }
-    // Fetch the latest settings right before processing, in case they changed
-    // This also ensures slot states reflect current settings, not potentially stale ones
-    await fetchSettings();
-    // We need to access the LATEST state after fetchSettings potentially updated it.
-    // A slight delay or using the state directly might work, but for robustness,
-    // it's better if callApiForSlot could read the latest state or receive it.
-    // Let's proceed assuming the state update from fetchSettings is quick enough for now.
-
-    const activeModels = [slot1State.modelName, slot2State.modelName, slot3State.modelName].filter(Boolean);
-    if (activeModels.length === 0) {
-        setSettingsError("No AI models selected. Please configure them in Settings.");
-        return;
-    }
-    setSettingsError(null);
-
-    setIsLoggingComplete(false);
-    setSelectedHistoryId(null); // Deselect history when processing new
-    setProcessedText(currentInput);
-    setShowPanels(true);
-    if (inputRef.current) inputRef.current.blur();
-    setInputText('');
-
-    // Reset only response/error/loading, keep modelName from fetched settings
-    setSlot1State(prev => ({ ...prev, loading: false, response: null, error: null }));
-    setSlot2State(prev => ({ ...prev, loading: false, response: null, error: null }));
-    setSlot3State(prev => ({ ...prev, loading: false, response: null, error: null }));
-
-    // --- Helper Function to Call Specific AI Backend API ---
-    const callApiForSlot = async (
-        slotNumber: 1 | 2 | 3,
-        modelString: string | null, // Use the model name currently in state
-        prompt: string,
-        setState: React.Dispatch<React.SetStateAction<AiSlotState>>
+    // --- Helper Function to Call AI API & Append Conversation ---
+    const callApiForSlot = useCallback(async (
+        slotNumber: 1 | 2 | 3, modelString: string | null, promptToSend: string,
+        currentHistory: ConversationMessage[], setState: React.Dispatch<React.SetStateAction<AiSlotState>>,
+        currentInteractionId: string | null
     ) => {
-        if (!modelString) {
-            setState(prev => ({ ...prev, loading: false, response: null, error: null }));
-            return;
-        }
-        setState(prev => ({ ...prev, loading: true, response: null, error: null }));
+        if (!modelString || !promptToSend) { setState(prev => ({ ...prev, loading: false })); return; }
+        const newUserMessage: ConversationMessage = { role: 'user', content: promptToSend };
+        const historyToSend = [...currentHistory, newUserMessage];
+        setState(prev => ({ ...prev, loading: true, response: null, error: null, conversationHistory: historyToSend }));
+        let modelResponseText: string | null = null;
         try {
-            const parts = modelString.split(': ');
-            if (parts.length !== 2) throw new Error(`Invalid model format: ${modelString}`);
-            const provider = parts[0];
-            const specificModel = parts[1];
+            const parts = modelString.split(': '); if (parts.length !== 2) throw new Error(`Invalid model format: ${modelString}`);
+            const provider = parts[0]; const specificModel = parts[1];
             let apiUrl = '';
             if (provider === 'ChatGPT') apiUrl = '/api/call-openai';
             else if (provider === 'Gemini') apiUrl = '/api/call-gemini';
             else throw new Error(`Unsupported provider: ${provider}`);
-
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, model: specificModel, slotNumber }),
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || `API call failed (${response.status})`);
+            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: promptToSend, model: specificModel, slotNumber, conversationHistory: historyToSend }) });
+            const result = await response.json(); if (!response.ok) throw new Error(result.error || `API call failed (${response.status})`);
+            modelResponseText = result.response;
+            const newModelMessage: ConversationMessage = { role: 'model', content: modelResponseText! };
+            setState(prev => ({ ...prev, response: modelResponseText, error: null, loading: false, conversationHistory: [...historyToSend, newModelMessage] }));
+            if (currentInteractionId && modelResponseText) {
+                console.log(`Attempting to append turn to DB for interaction ${currentInteractionId}, slot ${slotNumber}`);
+                try {
+                    const appendResponse = await fetch('/api/append-conversation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ interactionId: currentInteractionId, slotNumber: slotNumber, newUserMessage: newUserMessage, newModelMessage: newModelMessage }) });
+                    if (!appendResponse.ok) { const appendError = await appendResponse.json().catch(() => ({})); console.error(`Failed to append conversation turn for slot ${slotNumber}:`, appendError.error || `Status ${appendResponse.status}`); }
+                    else { console.log(`Successfully appended turn for slot ${slotNumber} to interaction ${currentInteractionId}`); }
+                } catch (appendErr) { console.error(`Error calling append-conversation API for slot ${slotNumber}:`, appendErr); }
             }
-            setState(prev => ({ ...prev, response: result.response, error: null }));
-        } catch (error: any) {
-            console.error(`Error calling API for Slot ${slotNumber} (${modelString}):`, error);
-            setState(prev => ({ ...prev, response: null, error: error.message || 'Unknown error' }));
-        } finally {
-            setState(prev => ({ ...prev, loading: false }));
-        }
-    };
+        } catch (error: any) { setState(prev => ({ ...prev, response: null, error: error.message || 'Unknown error', loading: false, conversationHistory: historyToSend })); }
+    }, []);
 
-    // --- Initiate API Calls Concurrently using the current state's modelName ---
-    console.log("Home Page: Initiating API calls for active slots...");
-    await Promise.allSettled([
-        callApiForSlot(1, slot1State.modelName, currentInput, setSlot1State),
-        callApiForSlot(2, slot2State.modelName, currentInput, setSlot2State),
-        callApiForSlot(3, slot3State.modelName, currentInput, setSlot3State)
-    ]);
-    console.log("Home Page: All API calls settled.");
-  };
+  // --- Handle Processing New Prompt / Main Follow-up ---
+  const handleProcessText = useCallback(async () => {
+    const currentInput = mainInputText.trim();
+    if (currentInput === '' || !user || isAuthLoading || settingsLoading) return;
+    const isFirstPromptOfChat = !selectedHistoryId; // Simplified check: if no history selected, it's new
+    if (isFirstPromptOfChat) { setCurrentChatPrompt(currentInput); setNeedsLogging(true); setSlot1State(prev => ({ ...prev, conversationHistory: [] })); setSlot2State(prev => ({ ...prev, conversationHistory: [] })); setSlot3State(prev => ({ ...prev, conversationHistory: [] })); }
+    else { setNeedsLogging(false); }
+    setLastSubmittedPrompt(currentInput); setShowPanels(true); if (mainInputRef.current) mainInputRef.current.blur(); setMainInputText('');
+    setSlot1State(prev => ({ ...prev, loading: false, response: null, error: null })); setSlot2State(prev => ({ ...prev, loading: false, response: null, error: null })); setSlot3State(prev => ({ ...prev, loading: false, response: null, error: null }));
+    console.log(`Home Page: Processing ${isFirstPromptOfChat ? 'initial' : 'follow-up'} prompt: "${currentInput}"`);
+    const stateBeforeCalls = { s1: slot1State, s2: slot2State, s3: slot3State };
+    const currentInteractionIdForUpdate = selectedHistoryId;
+    const promises = [
+        callApiForSlot(1, stateBeforeCalls.s1.modelName, currentInput, stateBeforeCalls.s1.conversationHistory, setSlot1State, currentInteractionIdForUpdate),
+        callApiForSlot(2, stateBeforeCalls.s2.modelName, currentInput, stateBeforeCalls.s2.conversationHistory, setSlot2State, currentInteractionIdForUpdate),
+        callApiForSlot(3, stateBeforeCalls.s3.modelName, currentInput, stateBeforeCalls.s3.conversationHistory, setSlot3State, currentInteractionIdForUpdate)
+    ];
+    await Promise.allSettled(promises);
+    console.log("Home Page: All main API calls settled.");
+  }, [ mainInputText, user, isAuthLoading, settingsLoading, selectedHistoryId, currentChatPrompt, slot1State, slot2State, slot3State, callApiForSlot, logInitialInteraction ]);
+
+   // --- Handle Individual Follow-up Replies ---
+   const handleReplyToSlot = useCallback((slotNumber: 1 | 2 | 3) => {
+        let targetState: AiSlotState; let setState: React.Dispatch<React.SetStateAction<AiSlotState>>;
+        if (slotNumber === 1) { targetState = slot1State; setState = setSlot1State; }
+        else if (slotNumber === 2) { targetState = slot2State; setState = setSlot2State; }
+        else { targetState = slot3State; setState = setSlot3State; }
+        const followUpPrompt = targetState.followUpInput.trim();
+        if (!followUpPrompt || !targetState.modelName || !user || !selectedHistoryId) { if (!selectedHistoryId) console.warn("Cannot send individual reply: No history item selected."); return; }
+        console.log(`Home Page: Sending follow-up to Slot ${slotNumber} (${targetState.modelName}): "${followUpPrompt}"`);
+        setLastSubmittedPrompt(followUpPrompt); setNeedsLogging(false);
+        setState(prev => ({ ...prev, followUpInput: '' }));
+        callApiForSlot(slotNumber, targetState.modelName, followUpPrompt, targetState.conversationHistory, setState, selectedHistoryId);
+   }, [user, slot1State, slot2State, slot3State, callApiForSlot, selectedHistoryId]);
+
 
   // --- Determine Overall UI State ---
-  const isProcessingAny = slot1State.loading || slot2State.loading || slot3State.loading;
+  const isProcessingSlot1 = slot1State.loading; const isProcessingSlot2 = slot2State.loading; const isProcessingSlot3 = slot3State.loading;
+  const isProcessingAny = isProcessingSlot1 || isProcessingSlot2 || isProcessingSlot3;
   const canInteract = !!user && !isAuthLoading && !settingsLoading;
 
-  // --- Helper to get Display Name for Panels ---
-  const getModelDisplayName = (modelString: string | null): string => {
-      if (!modelString) return "Slot Empty";
-      return modelString;
-  };
-
-  // --- Debugging useEffect to Monitor Slot State ---
-  useEffect(() => {
-    console.log("Home Page: Slot states updated:", {
-        slot1: slot1State,
-        slot2: slot2State,
-        slot3: slot3State
-    });
-  }, [slot1State, slot2State, slot3State]);
+  // --- Helper to get Display Name ---
+  const getModelDisplayName = (modelString: string | null): string => { if (!modelString) return "Slot Empty"; return modelString; };
 
   // --- Render Component JSX ---
   return (
     <div className="flex h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 overflow-hidden">
-      {/* History Sidebar Component */}
-      <HistorySidebar
-        history={history}
-        historyLoading={historyLoading || isAuthLoading}
-        historyError={historyError}
-        selectedHistoryId={selectedHistoryId}
-        handleHistoryClick={handleHistoryClick}
-        fetchHistory={fetchHistory}
-        onUpdateTitle={handleUpdateTitle}
-        onDeleteItem={handleDeleteItem}
-        isLoggedIn={!!user}
-      />
-
+      {/* History Sidebar */}
+      <HistorySidebar history={history} historyLoading={historyLoading || isAuthLoading} historyError={historyError} selectedHistoryId={selectedHistoryId} handleHistoryClick={handleHistoryClick} fetchHistory={fetchHistory} onUpdateTitle={handleUpdateTitle} onDeleteItem={handleDeleteItem} isLoggedIn={!!user} handleNewChat={handleNewChat} />
       {/* Main Content Area */}
-      <main className="relative flex-1 flex flex-col p-4 md:p-6 overflow-y-auto">
-
-        {/* Top Bar: Settings Link & Status Messages */}
-        <div className="w-full max-w-6xl mb-4 self-center flex justify-between items-center px-1 h-5">
-             <div className="text-sm text-red-500">
-                {settingsError && `Settings Error: ${settingsError}`}
-             </div>
-             {user && !isAuthLoading && !settingsLoading && (
-                 <Link href="/settings" className="text-sm font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 hover:underline">
-                     ⚙️ Settings
-                 </Link>
-             )}
-              {!user && !isAuthLoading && <div className="h-5"></div>}
+      <main className="relative flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
+        {/* Top Bar */}
+        <div className="w-full max-w-7xl mb-4 self-center flex justify-between items-center px-1 h-5 flex-shrink-0">
+             <div className="text-sm text-red-500"> {settingsError && `Settings Error: ${settingsError}`} </div>
+             {user && !isAuthLoading && !settingsLoading && ( <Link href="/settings" className="text-sm font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 hover:underline"> ⚙️ Settings </Link> )}
+             {!user && !isAuthLoading && <div className="h-5"></div>}
          </div>
-
-        {/* Prompt to Login */}
-        {!user && !isAuthLoading && (
-             <div className="w-full max-w-3xl mb-6 self-center p-4 bg-yellow-100 border border-yellow-300 rounded-md text-center text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-100 dark:border-yellow-700">
-                 Please <Link href="/auth" className="font-semibold underline hover:text-yellow-900 dark:hover:text-yellow-200">Sign In or Sign Up</Link> to save history and interact with the AIs.
-             </div>
-        )}
-
-        {/* Input Area */}
+        {/* Login Prompt */}
+        {!user && !isAuthLoading && ( <div className="w-full max-w-3xl mb-6 self-center p-4 bg-yellow-100 border rounded-md text-center text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-100 dark:border-yellow-700"> Please <Link href="/auth" className="font-semibold underline hover:text-yellow-900 dark:hover:text-yellow-200">Sign In or Sign Up</Link>... </div> )}
+        {/* Main Input Area */}
         <div className="w-full max-w-3xl mb-4 self-center flex-shrink-0 px-1">
-          <input
-            ref={inputRef}
-            type="text"
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            placeholder={
-                canInteract
-                ? "Enter your prompt..."
-                : (isAuthLoading || settingsLoading)
-                ? "Loading user & settings..."
-                : "Please log in to enter a prompt"
-            }
-            className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 shadow-sm disabled:bg-gray-200 dark:disabled:bg-gray-700/50 disabled:cursor-not-allowed bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !isProcessingAny && inputText.trim() !== '' && canInteract) {
-                handleProcessText();
-              }
-            }}
-            disabled={isProcessingAny || !canInteract}
-          />
-          <button
-            onClick={handleProcessText}
-            className={`w-full mt-2 p-3 text-white rounded-md font-semibold transition-colors duration-200 ${
-              !canInteract || isProcessingAny || inputText.trim() === ''
-                ? 'bg-gray-400 dark:bg-gray-600 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600'
-            }`}
-            disabled={!canInteract || isProcessingAny || inputText.trim() === ''}
-          >
-            {isProcessingAny ? 'Processing...' : 'Send Prompt'}
-          </button>
+          <textarea ref={mainInputRef} rows={1} value={mainInputText} onChange={(e) => setMainInputText(e.target.value)} placeholder={ canInteract ? (selectedHistoryId) ? "Send follow-up to all..." : "Enter initial prompt..." : (isAuthLoading || settingsLoading) ? "Loading..." : "Please log in" } className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 shadow-sm disabled:bg-gray-200 dark:disabled:bg-gray-700/50 disabled:cursor-not-allowed bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 resize-none overflow-y-auto min-h-[44px] max-h-[128px]" style={{ height: 'auto' }} onInput={(e) => { const target = e.target as HTMLTextAreaElement; target.style.height = 'auto'; target.style.height = `${target.scrollHeight}px`; }} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !isProcessingAny && mainInputText.trim() !== '' && canInteract) { e.preventDefault(); handleProcessText(); } }} disabled={isProcessingAny || !canInteract} />
+          <button onClick={handleProcessText} className={`w-full mt-2 p-3 text-white rounded-md font-semibold transition-colors duration-200 ${ !canInteract || isProcessingAny || mainInputText.trim() === '' ? 'bg-gray-400 dark:bg-gray-600 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600' }`} disabled={!canInteract || isProcessingAny || mainInputText.trim() === ''}> {isProcessingAny ? 'Processing...' : (selectedHistoryId) ? 'Send Follow-up' : 'Send Initial Prompt'} </button>
         </div>
-
-        {/* Display Area for the Processed Prompt */}
-        {processedText && canInteract && (
-          <div className="w-full max-w-3xl mb-4 self-center bg-gray-50 dark:bg-gray-800 p-3 rounded border border-gray-200 dark:border-gray-700 flex-shrink-0 px-1">
-            <p className="text-sm font-semibold text-gray-600 dark:text-gray-400">Results for prompt:</p>
-            <p className="mt-1 text-gray-800 dark:text-gray-200">{processedText}</p>
-          </div>
-        )}
-
         {/* AI Response Panels Section */}
         {showPanels && canInteract && (
-          <div className="w-full max-w-6xl grid grid-cols-1 md:grid-cols-3 gap-4 self-center flex-grow px-1 pb-4">
-
+          <div className="w-full max-w-7xl grid grid-cols-1 md:grid-cols-3 gap-4 self-center flex-grow px-1 pb-4 overflow-hidden">
             {/* Panel 1 */}
-            <div className={`p-4 border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[150px] border-gray-200 dark:border-gray-700 ${!slot1State.modelName ? 'opacity-60' : ''}`}>
-              <h2 className="text-lg md:text-xl font-semibold mb-2 text-blue-600 dark:text-blue-400 flex-shrink-0 truncate" title={slot1State.modelName || 'Slot 1'}>
-                  {getModelDisplayName(slot1State.modelName)}
-              </h2>
-              <div className="flex-grow overflow-y-auto text-sm custom-scrollbar">
-                {!slot1State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty. Configure in Settings.</p>}
-                {slot1State.modelName && slot1State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse">Loading...</p>}
-                {slot1State.modelName && slot1State.error && <p className="text-red-600 dark:text-red-400">Error: {slot1State.error}</p>}
-                {slot1State.modelName && !slot1State.loading && !slot1State.error && slot1State.response && (<p className="whitespace-pre-wrap text-gray-800 dark:text-gray-200">{slot1State.response}</p>)}
-                {slot1State.modelName && !slot1State.loading && !slot1State.error && !slot1State.response && processedText && (<p className="text-gray-400 dark:text-gray-500 italic">No response received.</p>)}
-                {slot1State.modelName && !processedText && !slot1State.loading && (<p className="text-gray-400 dark:text-gray-500 italic">Ready.</p>)}
+            <div className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] border-gray-200 dark:border-gray-700 overflow-hidden ${!slot1State.modelName ? 'opacity-60 pointer-events-none' : ''}`}>
+              <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-blue-600 dark:text-blue-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot1State.modelName || 'Slot 1'}> {getModelDisplayName(slot1State.modelName)} </h2>
+              <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
+                {!slot1State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
+                {/* Log conversation history length for debugging */}
+                {/* {console.log("Panel 1 rendering history length:", slot1State.conversationHistory.length)} */}
+                {slot1State.modelName && slot1State.conversationHistory.map((msg, index) => ( <div key={`${selectedHistoryId || 'new'}-1-${index}`} className={`p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-blue-50 dark:bg-blue-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}> <p className="whitespace-pre-wrap">{msg.content}</p> </div> ))}
+                {slot1State.modelName && slot1State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
+                {slot1State.modelName && slot1State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot1State.error}</p>}
               </div>
+              {slot1State.modelName && !slot1State.loading && (selectedHistoryId || currentChatPrompt) && (
+                 <div className="mt-auto p-4 pt-2 border-t dark:border-gray-600 flex space-x-2 flex-shrink-0">
+                   <input type="text" value={slot1State.followUpInput} onChange={(e) => setSlot1State(prev => ({ ...prev, followUpInput: e.target.value }))} placeholder={`Reply...`} className="flex-grow p-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-1 focus:ring-blue-500 focus:outline-none" onKeyDown={(e) => { if (e.key === 'Enter' && slot1State.followUpInput.trim()) handleReplyToSlot(1); }} disabled={isProcessingSlot1} />
+                   <button onClick={() => handleReplyToSlot(1)} disabled={!slot1State.followUpInput.trim() || isProcessingSlot1} className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm rounded-md disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0" title={`Send follow-up to ${getModelDisplayName(slot1State.modelName)}`}> Send </button>
+                 </div>
+               )}
             </div>
-
-            {/* Panel 2 */}
-             <div className={`p-4 border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[150px] border-gray-200 dark:border-gray-700 ${!slot2State.modelName ? 'opacity-60' : ''}`}>
-              <h2 className="text-lg md:text-xl font-semibold mb-2 text-green-600 dark:text-green-400 flex-shrink-0 truncate" title={slot2State.modelName || 'Slot 2'}>
-                  {getModelDisplayName(slot2State.modelName)}
-              </h2>
-              <div className="flex-grow overflow-y-auto text-sm custom-scrollbar">
-                {!slot2State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty. Configure in Settings.</p>}
-                {slot2State.modelName && slot2State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse">Loading...</p>}
-                {slot2State.modelName && slot2State.error && <p className="text-red-600 dark:text-red-400">Error: {slot2State.error}</p>}
-                {slot2State.modelName && !slot2State.loading && !slot2State.error && slot2State.response && (<p className="whitespace-pre-wrap text-gray-800 dark:text-gray-200">{slot2State.response}</p>)}
-                {slot2State.modelName && !slot2State.loading && !slot2State.error && !slot2State.response && processedText && (<p className="text-gray-400 dark:text-gray-500 italic">No response received.</p>)}
-                {slot2State.modelName && !processedText && !slot2State.loading && (<p className="text-gray-400 dark:text-gray-500 italic">Ready.</p>)}
+             {/* Panel 2 */}
+            <div className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] border-gray-200 dark:border-gray-700 overflow-hidden ${!slot2State.modelName ? 'opacity-60 pointer-events-none' : ''}`}>
+              <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-green-600 dark:text-green-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot2State.modelName || 'Slot 2'}> {getModelDisplayName(slot2State.modelName)} </h2>
+              <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
+                {!slot2State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
+                 {/* {console.log("Panel 2 rendering history length:", slot2State.conversationHistory.length)} */}
+                {slot2State.modelName && slot2State.conversationHistory.map((msg, index) => ( <div key={`${selectedHistoryId || 'new'}-2-${index}`} className={`p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-green-50 dark:bg-green-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}> <p className="whitespace-pre-wrap">{msg.content}</p> </div> ))}
+                {slot2State.modelName && slot2State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
+                {slot2State.modelName && slot2State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot2State.error}</p>}
               </div>
+               {slot2State.modelName && !slot2State.loading && (selectedHistoryId || currentChatPrompt) && (
+                 <div className="mt-auto p-4 pt-2 border-t dark:border-gray-600 flex space-x-2 flex-shrink-0">
+                   <input type="text" value={slot2State.followUpInput} onChange={(e) => setSlot2State(prev => ({ ...prev, followUpInput: e.target.value }))} placeholder={`Reply...`} className="flex-grow p-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-1 focus:ring-green-500 focus:outline-none" onKeyDown={(e) => { if (e.key === 'Enter' && slot2State.followUpInput.trim()) handleReplyToSlot(2); }} disabled={isProcessingSlot2} />
+                   <button onClick={() => handleReplyToSlot(2)} disabled={!slot2State.followUpInput.trim() || isProcessingSlot2} className="px-3 py-1 bg-green-500 hover:bg-green-600 text-white text-sm rounded-md disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0" title={`Send follow-up to ${getModelDisplayName(slot2State.modelName)}`}> Send </button>
+                 </div>
+               )}
             </div>
-
             {/* Panel 3 */}
-             <div className={`p-4 border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[150px] border-gray-200 dark:border-gray-700 ${!slot3State.modelName ? 'opacity-60' : ''}`}>
-              <h2 className="text-lg md:text-xl font-semibold mb-2 text-purple-600 dark:text-purple-400 flex-shrink-0 truncate" title={slot3State.modelName || 'Slot 3'}>
-                  {getModelDisplayName(slot3State.modelName)}
-              </h2>
-              <div className="flex-grow overflow-y-auto text-sm custom-scrollbar">
-                {!slot3State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty. Configure in Settings.</p>}
-                {slot3State.modelName && slot3State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse">Loading...</p>}
-                {slot3State.modelName && slot3State.error && <p className="text-red-600 dark:text-red-400">Error: {slot3State.error}</p>}
-                {slot3State.modelName && !slot3State.loading && !slot3State.error && slot3State.response && (<p className="whitespace-pre-wrap text-gray-800 dark:text-gray-200">{slot3State.response}</p>)}
-                {slot3State.modelName && !slot3State.loading && !slot3State.error && !slot3State.response && processedText && (<p className="text-gray-400 dark:text-gray-500 italic">No response received.</p>)}
-                {slot3State.modelName && !processedText && !slot3State.loading && (<p className="text-gray-400 dark:text-gray-500 italic">Ready.</p>)}
-              </div>
+            <div className={`border rounded-lg bg-white dark:bg-gray-800 shadow-md flex flex-col min-h-[250px] border-gray-200 dark:border-gray-700 overflow-hidden ${!slot3State.modelName ? 'opacity-60 pointer-events-none' : ''}`}>
+              <h2 className="text-lg md:text-xl font-semibold p-4 pb-2 text-purple-600 dark:text-purple-400 flex-shrink-0 truncate border-b dark:border-gray-700" title={slot3State.modelName || 'Slot 3'}> {getModelDisplayName(slot3State.modelName)} </h2>
+               <div className="flex-grow overflow-y-auto text-sm p-4 space-y-3 custom-scrollbar">
+                  {!slot3State.modelName && <p className="text-gray-400 dark:text-gray-500 italic text-center mt-4">Slot empty.</p>}
+                   {/* {console.log("Panel 3 rendering history length:", slot3State.conversationHistory.length)} */}
+                  {slot3State.modelName && slot3State.conversationHistory.map((msg, index) => ( <div key={`${selectedHistoryId || 'new'}-3-${index}`} className={`p-2 rounded-md max-w-[90%] ${msg.role === 'user' ? 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 ml-auto' : 'bg-purple-50 dark:bg-purple-900/30 text-gray-900 dark:text-gray-100 mr-auto'}`}> <p className="whitespace-pre-wrap">{msg.content}</p> </div> ))}
+                  {slot3State.modelName && slot3State.loading && <p className="text-gray-500 dark:text-gray-400 animate-pulse mt-2 p-2">Loading...</p>}
+                  {slot3State.modelName && slot3State.error && <p className="text-red-600 dark:text-red-400 mt-2 p-2">Error: {slot3State.error}</p>}
+               </div>
+               {slot3State.modelName && !slot3State.loading && (selectedHistoryId || currentChatPrompt) && (
+                 <div className="mt-auto p-4 pt-2 border-t dark:border-gray-600 flex space-x-2 flex-shrink-0">
+                   <input type="text" value={slot3State.followUpInput} onChange={(e) => setSlot3State(prev => ({ ...prev, followUpInput: e.target.value }))} placeholder={`Reply...`} className="flex-grow p-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-1 focus:ring-purple-500 focus:outline-none" onKeyDown={(e) => { if (e.key === 'Enter' && slot3State.followUpInput.trim()) handleReplyToSlot(3); }} disabled={isProcessingSlot3} />
+                   <button onClick={() => handleReplyToSlot(3)} disabled={!slot3State.followUpInput.trim() || isProcessingSlot3} className="px-3 py-1 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-md disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0" title={`Send follow-up to ${getModelDisplayName(slot3State.modelName)}`}> Send </button>
+                 </div>
+               )}
             </div>
-
           </div>
         )}
-
-        {/* Placeholder shown when panels are hidden or interaction is not possible */}
-        {(!showPanels || !canInteract) && (
-             <div className="flex-grow flex items-center justify-center text-gray-500 dark:text-gray-400 text-center px-4">
-               {canInteract
-                 ? "Enter a prompt above or select an item from history to see AI responses."
-                 : (isAuthLoading || settingsLoading)
-                 ? "Loading user data and settings..." // Loading state message
-                 : "Please log in to start comparing AI responses." // Logged out message
-               }
-             </div>
-        )}
+        {/* Placeholder */}
+        {(!showPanels || !canInteract) && ( <div className="flex-grow flex items-center justify-center text-gray-500 dark:text-gray-400 text-center px-4"> {canInteract ? "Click 'New Chat' or select an item from history to begin." : (isAuthLoading || settingsLoading) ? "Loading..." : "Please log in..."} </div> )}
       </main>
     </div>
   );

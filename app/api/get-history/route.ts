@@ -1,11 +1,11 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/get-history/route.ts
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
-// Assuming your type definition is updated elsewhere and imported if needed
-// import type { InteractionHistoryItem } from '../../types/InteractionHistoryItem';
+// Import the specific types needed
+import type { ConversationMessage } from '../../types/InteractionHistoryItem'; // Assuming type is defined here
 
 export const dynamic = 'force-dynamic';
 
@@ -14,24 +14,20 @@ export const dynamic = 'force-dynamic';
 interface HistoryItemResponse {
   id: string;
   created_at: string;
-  prompt: string;
+  prompt: string; // The initial prompt
   title?: string | null;
-  // Include the model columns
-  slot_1_model?: string | null; // Changed from slot_1_model_used for consistency with DB? Verify column name.
-  slot_1_response?: string | null;
-  slot_1_error?: string | null;
-  slot_2_model?: string | null; // Changed from slot_2_model_used for consistency with DB? Verify column name.
-  slot_2_response?: string | null;
-  slot_2_error?: string | null;
-  slot_3_model?: string | null; // Changed from slot_3_model_used for consistency with DB? Verify column name.
-  slot_3_response?: string | null;
-  slot_3_error?: string | null;
-  // user_id is usually not needed client-side due to RLS
+  // Include the model used and the conversation history columns
+  slot_1_model_used?: string | null;
+  slot_1_conversation?: ConversationMessage[] | null; // Expecting an array of messages
+  slot_2_model_used?: string | null;
+  slot_2_conversation?: ConversationMessage[] | null; // Expecting an array of messages
+  slot_3_model_used?: string | null;
+  slot_3_conversation?: ConversationMessage[] | null; // Expecting an array of messages
 }
 
 
 export async function GET() {
-  console.log("--- Get History API Start ---"); // Log start
+  console.log("--- Get History API Start ---");
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -48,45 +44,37 @@ export async function GET() {
   try {
     // 1. Check session
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError) {
-      console.error('Get History: Session error:', sessionError.message);
-      return NextResponse.json({ error: 'Failed to get user session.' }, { status: 500 });
-    }
-    if (!session) {
-      console.warn('Get History: Unauthorized attempt.');
-      return NextResponse.json({ error: 'Unauthorized: User not logged in.' }, { status: 401 });
+    if (sessionError || !session) {
+      console.warn('Get History: Unauthorized attempt or session error.');
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     const userId = session.user.id;
     console.log(`Get History: Session valid for user ${userId}. Fetching data...`);
 
-    // 2. Fetch data, including the new slot_..._model columns
+    // 2. Fetch data, selecting the new conversation columns
     const selectQuery = `
         id,
         created_at,
         prompt,
         title,
-        slot_1_model,
-        slot_1_response,
-        slot_1_error,
-        slot_2_model,
-        slot_2_response,
-        slot_2_error,
-        slot_3_model,
-        slot_3_response,
-        slot_3_error
-      `; // Define query string for logging
-    console.log(`Get History: Performing select: ${selectQuery.replace(/\s+/g, ' ').trim()}`); // Log the query
+        slot_1_model_used,
+        slot_1_conversation,
+        slot_2_model_used,
+        slot_2_conversation,
+        slot_3_model_used,
+        slot_3_conversation
+      `; // Select the new columns
+    console.log(`Get History: Performing select: ${selectQuery.replace(/\s+/g, ' ').trim()}`);
 
     const { data, error: fetchError } = await supabase
       .from('interactions') // Your table name
-      .select(selectQuery) // Use the defined query string
-      .order('created_at', { ascending: false }) // Get newest first
-      .limit(100); // Adjust limit as needed
+      .select(selectQuery) // Select the conversation history columns
+      .order('created_at', { ascending: false })
+      .limit(100);
 
-    // Log the raw data or error immediately after fetch
     if (fetchError) {
       console.error(`Get History: Supabase fetch error for user ${userId}:`, fetchError);
-      if (fetchError.code === '42501') { // RLS permission denied
+      if (fetchError.code === '42501') {
         return NextResponse.json({ error: 'Permission denied to access history.' }, { status: 403 });
       }
        if (fetchError.message.includes('column') && fetchError.message.includes('does not exist')) {
@@ -96,12 +84,16 @@ export async function GET() {
       return NextResponse.json({ error: `Failed to fetch interaction history: ${fetchError.message}` }, { status: 500 });
     }
 
-    // Log the fetched data before sending response
-    console.log(`Get History: Successfully fetched ${data?.length ?? 0} items for user ${userId}. Sample data:`, JSON.stringify(data?.[0] ?? null, null, 2)); // Log first item sample
+    // Log fetched data sample
+    console.log(`Get History: Successfully fetched ${data?.length ?? 0} items for user ${userId}.`);
+    if (data && data.length > 0) {
+        console.log("Get History: Structure of first fetched item:", JSON.stringify(data[0], null, 2));
+    }
 
     // 3. Return the fetched data
     console.log("--- Get History API End (Success) ---");
     // Cast the data to the expected response type array
+    // Supabase client automatically parses JSONB columns into JS objects/arrays
     return NextResponse.json(data as HistoryItemResponse[] | null ?? [], { status: 200 });
 
   } catch (err: any) {

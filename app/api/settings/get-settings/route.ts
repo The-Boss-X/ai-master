@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 // app/api/settings/get-settings/route.ts
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
@@ -15,9 +16,8 @@ export async function GET() {
       cookies: {
         get(name: string) { return cookieStore.get(name)?.value; },
         // Read-only route, set/remove not strictly needed but included for completeness
-        // No need for try/catch if middleware handles session refresh
-        set(name: string, value: string, options: CookieOptions) { cookieStore.set({ name, value, ...options }); },
-        remove(name: string, options: CookieOptions) { cookieStore.set({ name, value: '', ...options }); },
+        set(name: string, value: string, options: CookieOptions) { try { cookieStore.set({ name, value, ...options }); } catch (error) {} },
+        remove(name: string, options: CookieOptions) { try { cookieStore.set({ name, value: '', ...options }); } catch (error) {} },
       },
     }
   );
@@ -34,14 +34,19 @@ export async function GET() {
 
     const userId = session.user.id;
 
-    // 2. Fetch settings for the authenticated user
-    const { data: settings, error: fetchError } = await supabase
-      .from('user_settings') // Your table name
-      .select(`
+    // 2. **MODIFIED**: Fetch settings for the authenticated user, including slots 1-6
+    const selectQuery = `
         slot_1_model,
         slot_2_model,
-        slot_3_model
-        `) // CORRECTED: Removed the invalid comment from this string
+        slot_3_model,
+        slot_4_model,
+        slot_5_model,
+        slot_6_model
+    `; // Select all 6 model slots
+
+    const { data: settings, error: fetchError } = await supabase
+      .from('user_settings') // Your table name
+      .select(selectQuery)
       .eq('user_id', userId) // Filter by the authenticated user's ID
       .maybeSingle(); // Use maybeSingle as user might not have settings saved yet
 
@@ -53,7 +58,6 @@ export async function GET() {
     }
 
     // 3. Return the fetched settings (or null if none exist)
-    // The client will handle the case where settings is null (e.g., set defaults)
     console.log(`Fetched settings for user ${userId}:`, settings);
     return NextResponse.json(settings, { status: 200 });
 

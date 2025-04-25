@@ -5,25 +5,14 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 // Import the specific types needed
-import type { ConversationMessage } from '../../types/InteractionHistoryItem'; // Assuming type is defined here
+import type { InteractionHistoryItem, ConversationMessage } from '../../types/InteractionHistoryItem'; // Import the UPDATED InteractionHistoryItem type
 
 export const dynamic = 'force-dynamic';
 
 // Define the expected structure of items returned by this route
 // This should match your updated InteractionHistoryItem type definition
-interface HistoryItemResponse {
-  id: string;
-  created_at: string;
-  prompt: string; // The initial prompt
-  title?: string | null;
-  // Include the model used and the conversation history columns
-  slot_1_model_used?: string | null;
-  slot_1_conversation?: ConversationMessage[] | null; // Expecting an array of messages
-  slot_2_model_used?: string | null;
-  slot_2_conversation?: ConversationMessage[] | null; // Expecting an array of messages
-  slot_3_model_used?: string | null;
-  slot_3_conversation?: ConversationMessage[] | null; // Expecting an array of messages
-}
+// Note: This type alias might be redundant if InteractionHistoryItem is imported and used directly
+// type HistoryItemResponse = InteractionHistoryItem;
 
 
 export async function GET() {
@@ -51,7 +40,7 @@ export async function GET() {
     const userId = session.user.id;
     console.log(`Get History: Session valid for user ${userId}. Fetching data...`);
 
-    // 2. Fetch data, selecting the new conversation columns
+    // 2. **MODIFIED**: Fetch data, selecting columns for slots 1-6
     const selectQuery = `
         id,
         created_at,
@@ -62,8 +51,14 @@ export async function GET() {
         slot_2_model_used,
         slot_2_conversation,
         slot_3_model_used,
-        slot_3_conversation
-      `; // Select the new columns
+        slot_3_conversation,
+        slot_4_model_used,
+        slot_4_conversation,
+        slot_5_model_used,
+        slot_5_conversation,
+        slot_6_model_used,
+        slot_6_conversation
+      `; // Select all needed columns including slots 4-6
     console.log(`Get History: Performing select: ${selectQuery.replace(/\s+/g, ' ').trim()}`);
 
     const { data, error: fetchError } = await supabase
@@ -80,7 +75,7 @@ export async function GET() {
        if (fetchError.message.includes('column') && fetchError.message.includes('does not exist')) {
            console.error("!!! Potential schema cache issue or mismatch between code and DB schema for 'interactions' table !!!");
            return NextResponse.json({ success: false, error: `Database schema error: ${fetchError.message}` }, { status: 500 });
-      }
+       }
       return NextResponse.json({ error: `Failed to fetch interaction history: ${fetchError.message}` }, { status: 500 });
     }
 
@@ -94,7 +89,7 @@ export async function GET() {
     console.log("--- Get History API End (Success) ---");
     // Cast the data to the expected response type array
     // Supabase client automatically parses JSONB columns into JS objects/arrays
-    return NextResponse.json(data as HistoryItemResponse[] | null ?? [], { status: 200 });
+    return NextResponse.json(data as InteractionHistoryItem[] ?? [], { status: 200 }); // Use the imported type directly
 
   } catch (err: any) {
     console.error('Get History: Unexpected error in /api/get-history:', err);

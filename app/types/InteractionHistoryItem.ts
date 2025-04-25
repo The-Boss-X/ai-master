@@ -6,7 +6,7 @@ export interface ConversationMessage {
   content: string;
 }
 
-// Defines the structure of a history item based on the FINAL database schema
+// **MODIFIED**: Defines the structure of a history item including slots 1-6
 // Used in frontend components like app/page.tsx and potentially HistorySidebar.tsx
 export interface InteractionHistoryItem {
   id: string; // Unique identifier for the interaction
@@ -17,16 +17,22 @@ export interface InteractionHistoryItem {
 
   // --- Fields matching the modified 'interactions' table schema ---
 
-  slot_1_model_used?: string | null; // Model identifier string (e.g., "ChatGPT: gpt-4o") used in slot 1
-  slot_1_conversation?: ConversationMessage[] | null; // **CHANGED:** Stores the array of messages for slot 1
+  slot_1_model_used?: string | null;
+  slot_1_conversation?: ConversationMessage[] | null;
 
-  slot_2_model_used?: string | null; // Model identifier string used in slot 2
-  slot_2_conversation?: ConversationMessage[] | null; // **CHANGED:** Stores the array of messages for slot 2
+  slot_2_model_used?: string | null;
+  slot_2_conversation?: ConversationMessage[] | null;
 
-  slot_3_model_used?: string | null; // Model identifier string used in slot 3
-  slot_3_conversation?: ConversationMessage[] | null; // **CHANGED:** Stores the array of messages for slot 3
+  slot_3_model_used?: string | null;
+  slot_3_conversation?: ConversationMessage[] | null;
 
-  // Note: We are no longer storing individual responses/errors separately here.
-  // Errors encountered during follow-ups would need to be handled in the frontend state
-  // or logged differently if persistence is needed beyond the initial interaction log.
+  slot_4_model_used?: string | null; // Added slot 4
+  slot_4_conversation?: ConversationMessage[] | null; // Added slot 4
+
+  slot_5_model_used?: string | null; // Added slot 5
+  slot_5_conversation?: ConversationMessage[] | null; // Added slot 5
+
+  slot_6_model_used?: string | null; // Added slot 6
+  slot_6_conversation?: ConversationMessage[] | null; // Added slot 6
+
 }

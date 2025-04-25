@@ -12,20 +12,22 @@ interface ConversationMessage {
   content: string;
 }
 
-// Expected payload from the client
+// **MODIFIED**: Expected payload from the client (slotNumber can now be 1-6)
 interface AppendConversationPayload {
   interactionId: string; // ID of the history item to update
-  slotNumber: 1 | 2 | 3; // Which slot's conversation to update
+  slotNumber: 1 | 2 | 3 | 4 | 5 | 6; // Which slot's conversation to update (1-based)
   newUserMessage: ConversationMessage; // The user's follow-up prompt
   newModelMessage: ConversationMessage; // The model's response to the follow-up
 }
 
-// Explicitly type the expected shape of the interaction object fetched from Supabase
-// Include all potential conversation columns, allowing them to be null or arrays
+// **MODIFIED**: Explicitly type the expected shape of the interaction object fetched from Supabase (includes slots 1-6)
 interface InteractionConversationData {
     slot_1_conversation?: ConversationMessage[] | null;
     slot_2_conversation?: ConversationMessage[] | null;
     slot_3_conversation?: ConversationMessage[] | null;
+    slot_4_conversation?: ConversationMessage[] | null; // Added slot 4
+    slot_5_conversation?: ConversationMessage[] | null; // Added slot 5
+    slot_6_conversation?: ConversationMessage[] | null; // Added slot 6
 }
 
 export const dynamic = 'force-dynamic';
@@ -62,16 +64,20 @@ export async function POST(request: NextRequest) {
 
     const { interactionId, slotNumber, newUserMessage, newModelMessage } = payload;
 
-    // Basic validation
-    if (!interactionId || !slotNumber || ![1, 2, 3].includes(slotNumber) || !newUserMessage?.content || !newModelMessage?.content) {
+    // **MODIFIED**: Basic validation for slotNumber 1-6
+    if (!interactionId || !slotNumber || ![1, 2, 3, 4, 5, 6].includes(slotNumber) || !newUserMessage?.content || !newModelMessage?.content) {
       return NextResponse.json({ success: false, error: 'Missing required fields for appending conversation' }, { status: 400 });
     }
 
-    // 3. Fetch the current conversation history for ALL slots
+    // 3. **MODIFIED**: Fetch the current conversation history for ALL slots (1-6)
     // Ensure RLS allows the user to select this row (auth.uid() = user_id)
+    const selectQuery = `
+        slot_1_conversation, slot_2_conversation, slot_3_conversation,
+        slot_4_conversation, slot_5_conversation, slot_6_conversation
+    `; // Select all conversation columns
     const { data, error: fetchError } = await supabase
       .from('interactions')
-      .select('slot_1_conversation, slot_2_conversation, slot_3_conversation') // Select all conversation columns
+      .select(selectQuery)
       .eq('id', interactionId)
       .eq('user_id', userId) // Ensure user owns this interaction
       .single(); // Expect one row
@@ -91,20 +97,9 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'Interaction not found.' }, { status: 404 });
     }
 
-    // 4. Determine the target column and get existing history
-    let conversationColumn: keyof InteractionConversationData; // Use keyof for type safety
-    let existingHistory: ConversationMessage[];
-
-    if (slotNumber === 1) {
-        conversationColumn = 'slot_1_conversation';
-        existingHistory = currentInteraction.slot_1_conversation || [];
-    } else if (slotNumber === 2) {
-        conversationColumn = 'slot_2_conversation';
-        existingHistory = currentInteraction.slot_2_conversation || [];
-    } else { // slotNumber === 3
-        conversationColumn = 'slot_3_conversation';
-        existingHistory = currentInteraction.slot_3_conversation || [];
-    }
+    // 4. **MODIFIED**: Determine the target column and get existing history (handles 1-6)
+    const conversationColumn = `slot_${slotNumber}_conversation` as keyof InteractionConversationData; // Use keyof for type safety
+    const existingHistory: ConversationMessage[] = currentInteraction[conversationColumn] || [];
 
     // 5. Prepare the updated conversation array
     const updatedHistory = [...existingHistory, newUserMessage, newModelMessage];

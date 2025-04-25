@@ -15,17 +15,22 @@ interface ConversationMessage {
   content: string;
 }
 
-// Define the expected structure of the incoming request body from app/page.tsx
-// Now includes the initial conversation turn for each slot
+// **MODIFIED**: Define the expected structure of the incoming request body (includes up to 6 slots)
 interface LogInteractionPayload {
   prompt: string; // The initial prompt
   title?: string | null;
   slot_1_model_used?: string | null;
-  slot_1_conversation?: ConversationMessage[] | null; // Initial turn(s) for slot 1
+  slot_1_conversation?: ConversationMessage[] | null;
   slot_2_model_used?: string | null;
-  slot_2_conversation?: ConversationMessage[] | null; // Initial turn(s) for slot 2
+  slot_2_conversation?: ConversationMessage[] | null;
   slot_3_model_used?: string | null;
-  slot_3_conversation?: ConversationMessage[] | null; // Initial turn(s) for slot 3
+  slot_3_conversation?: ConversationMessage[] | null;
+  slot_4_model_used?: string | null; // Added slot 4
+  slot_4_conversation?: ConversationMessage[] | null; // Added slot 4
+  slot_5_model_used?: string | null; // Added slot 5
+  slot_5_conversation?: ConversationMessage[] | null; // Added slot 5
+  slot_6_model_used?: string | null; // Added slot 6
+  slot_6_conversation?: ConversationMessage[] | null; // Added slot 6
 }
 
 
@@ -69,12 +74,13 @@ export async function POST(req: NextRequest) {
     const {
       prompt,
       title,
-      slot_1_model_used,
-      slot_1_conversation, // Get the initial conversation array
-      slot_2_model_used,
-      slot_2_conversation, // Get the initial conversation array
-      slot_3_model_used,
-      slot_3_conversation, // Get the initial conversation array
+      // Extract all potential slots
+      slot_1_model_used, slot_1_conversation,
+      slot_2_model_used, slot_2_conversation,
+      slot_3_model_used, slot_3_conversation,
+      slot_4_model_used, slot_4_conversation,
+      slot_5_model_used, slot_5_conversation,
+      slot_6_model_used, slot_6_conversation,
     } = parsedBody;
 
     if (!prompt) {
@@ -82,31 +88,40 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Prompt is required for logging.' }, { status: 400 });
     }
 
-    // 4. Prepare data object for inserting into the 'interactions' table
-    // Mapping received data to the database columns, including the NEW jsonb columns
-    const interactionDataForSupabase = {
+    // 4. **MODIFIED**: Prepare data object for inserting, including slots 1-6
+    const interactionDataForSupabase: Record<string, any> = {
       // user_id: userId, // Handled by RLS/default
-      prompt: prompt, // Store the initial prompt
+      prompt: prompt,
       title: title || prompt.substring(0, 50) + (prompt.length > 50 ? '...' : ''),
-      // Save the model used
-      slot_1_model_used: slot_1_model_used || null,
-      slot_2_model_used: slot_2_model_used || null,
-      slot_3_model_used: slot_3_model_used || null,
-      // Save the initial conversation arrays (should contain user prompt + model response/error)
-      slot_1_conversation: slot_1_conversation || null,
-      slot_2_conversation: slot_2_conversation || null,
-      slot_3_conversation: slot_3_conversation || null,
-      // created_at is handled by Supabase default
     };
+
+    // Add data for slots 1 through 6
+    for (let i = 1; i <= 6; i++) {
+        const modelKey = `slot_${i}_model_used` as keyof LogInteractionPayload;
+        const convKey = `slot_${i}_conversation` as keyof LogInteractionPayload;
+        interactionDataForSupabase[modelKey] = parsedBody[modelKey] || null;
+        interactionDataForSupabase[convKey] = parsedBody[convKey] || null;
+    }
+
     console.log(`Log Interaction: Data prepared for 'interactions' insert for user ${userId}:`, JSON.stringify(interactionDataForSupabase, null, 2));
 
 
     // 5. Insert data ONLY into the 'interactions' table
     // Ensure RLS allows insert and user_id matches auth.uid()
+    // **MODIFIED**: Select back all 6 conversation slots
+    const selectQuery = `
+        id, created_at, prompt, title, user_id,
+        slot_1_model_used, slot_1_conversation,
+        slot_2_model_used, slot_2_conversation,
+        slot_3_model_used, slot_3_conversation,
+        slot_4_model_used, slot_4_conversation,
+        slot_5_model_used, slot_5_conversation,
+        slot_6_model_used, slot_6_conversation
+    `;
     const { data, error: insertError } = await supabase
       .from('interactions') // Target the interactions table
       .insert([interactionDataForSupabase]) // Insert the prepared interaction data
-      .select() // Select the newly inserted row(s) to return to client
+      .select(selectQuery) // Select the newly inserted row(s) to return to client
       .single(); // Expecting a single row back
 
     if (insertError) {

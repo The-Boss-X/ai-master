@@ -10,14 +10,16 @@ import crypto from 'crypto'; // Import Node.js crypto module
 // Ensure this route is always dynamic
 export const dynamic = 'force-dynamic';
 
-// **MODIFIED**: Define expected request body structure from the client
+// **MODIFIED**: Define expected request body structure from the client (includes up to 6 slots)
 interface SaveSettingsPayload {
   slot_1_model?: string | null;
   slot_2_model?: string | null;
   slot_3_model?: string | null;
+  slot_4_model?: string | null; // Added slot 4
+  slot_5_model?: string | null; // Added slot 5
+  slot_6_model?: string | null; // Added slot 6
   gemini_api_key?: string | null; // Plain text Gemini key received from client
   openai_api_key?: string | null; // Plain text OpenAI key received from client
-  // **REMOVED**: slot_X_api_key fields
 }
 
 // --- Encryption Helper ---
@@ -86,7 +88,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Invalid JSON payload received.' }, { status: 400 });
     }
 
-    // 3. **MODIFIED**: Encrypt provider-specific API Keys if provided
+    // 3. Encrypt provider-specific API Keys if provided
     let encryptedGeminiKey: string | null = null;
     let encryptedOpenAIKey: string | null = null;
     let encryptionError = false;
@@ -99,34 +101,34 @@ export async function POST(request: NextRequest) {
         encryptedOpenAIKey = encryptData(settingsPayload.openai_api_key, encryptionKey);
         if (!encryptedOpenAIKey) encryptionError = true;
     }
-    // **REMOVED**: Encryption logic for slot_X_api_key
 
     if (encryptionError) {
         // Logged internally by encryptData
         return NextResponse.json({ error: 'Failed to process API key data securely.' }, { status: 500 });
     }
 
-    // 4. **MODIFIED**: Prepare data for Supabase upsert operation
-    // Use Record<string, any> for flexibility with conditional key inclusion
+    // 4. **MODIFIED**: Prepare data for Supabase upsert operation, including slots 1-6
     const settingsDataToSave: Record<string, any> = {
       user_id: userId,
-      slot_1_model: settingsPayload.slot_1_model || null,
-      slot_2_model: settingsPayload.slot_2_model || null,
-      slot_3_model: settingsPayload.slot_3_model || null,
       updated_at: new Date().toISOString(),
     };
 
+    // Add model selections for slots 1 through 6
+    for (let i = 1; i <= 6; i++) {
+        const modelKey = `slot_${i}_model` as keyof SaveSettingsPayload;
+        settingsDataToSave[modelKey] = settingsPayload[modelKey] || null;
+    }
+
     // Only add ENCRYPTED keys to the update object if they were successfully encrypted
-    // This prevents overwriting existing keys with null if the user didn't provide a new key
     if (encryptedGeminiKey) settingsDataToSave.gemini_api_key_encrypted = encryptedGeminiKey;
     if (encryptedOpenAIKey) settingsDataToSave.openai_api_key_encrypted = encryptedOpenAIKey;
-    // **REMOVED**: Adding slot_X_api_key_encrypted
 
     // 5. Use upsert to insert or update the user's settings row
+    // **MODIFIED**: Select back all 6 model slots
     const { data, error: upsertError } = await supabase
       .from('user_settings')
       .upsert(settingsDataToSave, { onConflict: 'user_id' })
-      .select('slot_1_model, slot_2_model, slot_3_model') // Select non-sensitive fields back
+      .select('slot_1_model, slot_2_model, slot_3_model, slot_4_model, slot_5_model, slot_6_model') // Select all model fields back
       .single();
 
     if (upsertError) {

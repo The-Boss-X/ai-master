@@ -6,7 +6,7 @@ import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 // Import the Google AI SDK types
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, Content } from '@google/generative-ai';
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, Content, FinishReason } from '@google/generative-ai'; // Added FinishReason
 import crypto from 'crypto';
 
 // Define structure for a single message in the history (matches client)
@@ -99,7 +99,6 @@ export async function POST(request: NextRequest) {
     // Cast fetched data to the specific type
     const settings = settingsData as UserGeminiSettings | null;
 
-    // **MODIFIED ERROR MESSAGES BELOW**
     if (fetchError) {
         if (fetchError?.code === 'PGRST116') { // Handle case where user has no settings row yet
             console.warn(`Call Gemini: No settings found for user ${userId}.`);
@@ -122,7 +121,6 @@ export async function POST(request: NextRequest) {
          // Corrected error message
         return NextResponse.json({ error: 'Gemini API Key is missing. Please add it in Settings.' }, { status: 400 });
     }
-    // **END MODIFIED ERROR MESSAGES**
 
     const decryptedApiKey = decryptData(encryptedApiKey, encryptionKey);
     if (!decryptedApiKey) {
@@ -134,7 +132,6 @@ export async function POST(request: NextRequest) {
 
 
     // --- Prepare history for Google AI SDK ---
-    // (History preparation logic remains the same)
     const historyForStartChat = (conversationHistory || [])
         .slice(0, -1) // Remove the last element (which is the latest user prompt)
         .filter(msg => msg.content?.trim()) // Filter out empty messages
@@ -148,7 +145,16 @@ export async function POST(request: NextRequest) {
     // Call Google AI API
     try {
       const genAI = new GoogleGenerativeAI(decryptedApiKey);
-      const generativeModel = genAI.getGenerativeModel({ model: model /* safetySettings: [...] */ });
+      const generativeModel = genAI.getGenerativeModel({
+          model: model,
+          // Optional: Configure safety settings if needed
+          // safetySettings: [
+          //   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+          //   { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+          //   { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+          //   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
+          // ],
+       });
 
       // Start chat session with the history *excluding* the latest prompt
       const chat = generativeModel.startChat({
@@ -160,46 +166,66 @@ export async function POST(request: NextRequest) {
       // Send ONLY the latest prompt using sendMessage
       const result = await chat.sendMessage(prompt);
       const response = result.response;
-      const responseText = response.text();
 
-      if (responseText === undefined || responseText === null || responseText.trim() === "") {
-          const blockReason = response.promptFeedback?.blockReason;
-          console.warn(`Call Gemini: Response empty or blocked. Reason: ${blockReason || 'None Provided'}. User: ${userId}, Model: ${model}`);
-          if (blockReason) throw new Error(`Gemini response blocked due to ${blockReason}.`);
-          else throw new Error('Gemini response was empty.');
+      // --- REVISED: Check for blocking or empty response ---
+      const promptFeedback = response.promptFeedback;
+      // Access finishReason safely using optional chaining
+      const finishReason = response.candidates?.[0]?.finishReason;
+
+      // Check if blocked based on promptFeedback or finishReason
+      if (promptFeedback?.blockReason || finishReason === FinishReason.SAFETY || finishReason === FinishReason.OTHER) {
+          const reason = promptFeedback?.blockReason || finishReason || 'Unknown Safety/Block Reason';
+          console.warn(`Call Gemini: Response blocked. Reason: ${reason}. User: ${userId}, Model: ${model}`);
+          // Return a specific 400 error for blocked content
+          return NextResponse.json({ error: `Gemini response blocked due to ${reason}. Please revise your prompt.` }, { status: 400 });
       }
 
+      // Get text *after* checking feedback/reason
+      const responseText = response.text();
+
+      // Check if the response text is empty, even if not explicitly blocked
+      if (responseText === undefined || responseText === null || responseText.trim() === "") {
+          // Check if finishReason indicates a normal stop but empty text (less likely but possible)
+          const reason = finishReason || 'Unknown';
+          console.warn(`Call Gemini: Response empty. Finish Reason: ${reason}. User: ${userId}, Model: ${model}`);
+          // Return a specific error for empty response, maybe 500 or a custom 4xx? Let's use 500 for unexpected empty.
+          return NextResponse.json({ error: `Gemini returned an empty response (Finish Reason: ${reason}).` }, { status: 500 });
+      }
+      // --- End REVISED Check ---
+
+      // Success: Return the valid response text
       return NextResponse.json({ response: responseText.trim() }, { status: 200 });
 
     } catch (apiError: any) {
-      // (Detailed Gemini error handling remains the same)
+      // This catch block now primarily handles SDK/network errors, not empty/blocked responses handled above
       console.error(`Call Gemini: Google AI API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);
       let errorMessage = 'Failed to get response from Google AI.'; let errorStatus = 500;
-      if (apiError.message) {
-          // Basic error mapping
-          if (apiError.message.includes('API key not valid')) {
-              errorMessage = "Invalid Gemini API Key provided. Please check your key in Settings.";
-              errorStatus = 401; // Unauthorized
-          } else if (apiError.message.includes('quota')) {
-              errorMessage = "Gemini API quota exceeded. Please check your usage or plan.";
-              errorStatus = 429; // Too Many Requests
-          } else if (apiError.message.includes('model_not_found') || apiError.message.includes('not found')) {
-              errorMessage = `Gemini model '${model}' not found or unavailable.`;
-              errorStatus = 400; // Bad Request (or 404 Not Found)
-          } else if (apiError.message.includes('blocked due to SAFETY')) {
-               errorMessage = `Gemini response blocked due to safety settings. ${apiError.message}`;
-               errorStatus = 400; // Or potentially 200 with error content depending on how you handle blocks
-          } else if (apiError.message.includes('Invalid JSON payload')) {
-               errorMessage = `Invalid request format sent to Gemini. ${apiError.message}`;
-               errorStatus = 400;
-          } else {
-               errorMessage = apiError.message; // Use the error message directly if not specifically mapped
-          }
-      }
-      // Use status from the error object if available (some SDK errors might have it)
+
+      // Attempt to use status/message from the error object if available (more reliable for SDK errors)
       if (apiError.status && typeof apiError.status === 'number') {
           errorStatus = apiError.status;
       }
+      if (apiError.message) {
+          errorMessage = apiError.message;
+      }
+
+      // Fallback message parsing if needed (can refine based on observed errors)
+      if (errorMessage === 'Failed to get response from Google AI.') { // Only parse if generic message is still set
+          if (apiError.message?.includes('API key not valid')) {
+              errorMessage = "Invalid Gemini API Key provided. Please check your key in Settings.";
+              errorStatus = 401;
+          } else if (apiError.message?.includes('quota')) {
+              errorMessage = "Gemini API quota exceeded. Please check your usage or plan.";
+              errorStatus = 429;
+          } else if (apiError.message?.includes('model_not_found') || apiError.message?.includes('not found')) {
+              errorMessage = `Gemini model '${model}' not found or unavailable.`;
+              errorStatus = 400;
+          } else if (apiError.message?.includes('Invalid JSON payload')) {
+              errorMessage = `Invalid request format sent to Gemini. ${apiError.message}`;
+              errorStatus = 400;
+          }
+      }
+
       return NextResponse.json({ error: errorMessage }, { status: errorStatus });
     }
 

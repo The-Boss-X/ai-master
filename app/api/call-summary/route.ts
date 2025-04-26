@@ -7,6 +7,16 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import crypto from 'crypto'; // Import Node.js crypto module for decryption
 
+// Define expected FinishReason values (if not importable)
+enum FinishReason {
+    STOP = "STOP",
+    MAX_TOKENS = "MAX_TOKENS", // Will no longer be explicitly checked for throwing error
+    SAFETY = "SAFETY",
+    RECITATION = "RECITATION",
+    OTHER = "OTHER",
+    UNSPECIFIED = "FINISH_REASON_UNSPECIFIED",
+}
+
 // Ensure this route is always dynamic
 export const dynamic = 'force-dynamic';
 
@@ -61,7 +71,7 @@ function decryptData(encryptedTextHex: string, secretKeyHex: string): string | n
 }
 // --- End Decryption Helper ---
 
-// --- AI Provider Call Helpers (Simplified - Adapt from your existing API routes) ---
+// --- AI Provider Call Helpers ---
 async function callOpenAIForSummary(apiKey: string, model: string, prompt: string): Promise<string> {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -73,19 +83,33 @@ async function callOpenAIForSummary(apiKey: string, model: string, prompt: strin
             model: model,
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.5, // Adjust temperature for summary task
-            max_tokens: 500, // Adjust max tokens as needed
+            // REMOVED: max_tokens: 500,
         }),
     });
     const data = await response.json();
-    if (!response.ok) {
+    if (!response.ok || !data.choices?.[0]?.message?.content) {
         console.error("OpenAI Summary Error:", data);
-        throw new Error(data.error?.message || `OpenAI API Error (${response.status})`);
+        const errorMsg = data.error?.message || `OpenAI API Error (${response.status})`;
+        if (errorMsg.includes('context_length_exceeded')) {
+             throw new Error('OpenAI Error: Input prompt is too long for the selected model.');
+        }
+        // Check if OpenAI indicates max tokens finish reason (if applicable in response structure)
+        if (data.choices?.[0]?.finish_reason === 'length') {
+             console.warn("OpenAI Summary Truncated: Reached model's maximum token limit.");
+             // Decide: throw error or return truncated text? Throwing for consistency.
+             throw new Error("OpenAI summary truncated: Maximum output length reached.");
+        }
+        throw new Error(errorMsg);
     }
-    return data.choices[0]?.message?.content?.trim() || '';
+    // Check finish reason even on success, if available and indicates truncation
+    if (data.choices?.[0]?.finish_reason === 'length') {
+        console.warn("OpenAI Summary Truncated (reported on success): Reached model's maximum token limit.");
+        throw new Error("OpenAI summary truncated: Maximum output length reached.");
+    }
+    return data.choices[0].message.content.trim();
 }
 
 async function callGeminiForSummary(apiKey: string, model: string, prompt: string): Promise<string> {
-     // IMPORTANT: Adjust the API endpoint based on the Gemini model version if necessary
     const apiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     const response = await fetch(apiEndpoint, {
@@ -93,20 +117,57 @@ async function callGeminiForSummary(apiKey: string, model: string, prompt: strin
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
-            // Optional: Add generationConfig if needed (temperature, maxOutputTokens etc.)
-             generationConfig: {
+            generationConfig: {
                  temperature: 0.5,
-                 maxOutputTokens: 500,
+                 // REMOVED: maxOutputTokens: 500,
              }
         }),
     });
     const data = await response.json();
-     if (!response.ok || !data.candidates?.[0]?.content?.parts?.[0]?.text) {
-        console.error("Gemini Summary Error:", data);
-        throw new Error(data.error?.message || `Gemini API Error (${response.status})`);
+
+    // Error Handling for Gemini Summary
+    if (!response.ok) {
+        console.error("Gemini Summary HTTP Error:", response.status, data);
+        throw new Error(data?.error?.message || `Gemini API HTTP Error (${response.status})`);
     }
-    return data.candidates[0].content.parts[0].text.trim();
+
+    const candidate = data.candidates?.[0];
+    const finishReason = candidate?.finishReason as FinishReason | undefined;
+    const responseText = candidate?.content?.parts?.[0]?.text;
+    const safetyRatings = candidate?.safetyRatings;
+
+    if (finishReason === FinishReason.SAFETY || finishReason === FinishReason.OTHER) {
+        console.warn(`Gemini Summary Blocked: Reason: ${finishReason}`, safetyRatings);
+        throw new Error(`Gemini summary blocked due to ${finishReason}.`);
+    }
+
+    // REMOVED: Explicit check/throw for MAX_TOKENS finish reason
+    // if (finishReason === FinishReason.MAX_TOKENS) {
+    //     console.warn(`Gemini Summary Truncated: Reached max_tokens limit (set in request).`);
+    //     throw new Error(`Gemini summary truncated: Maximum output length reached.`);
+    // }
+    // Note: The model might still truncate due to its internal limits, but we are not causing it with maxOutputTokens.
+    // The API might still return MAX_TOKENS if the *model's* limit is hit. We'll allow truncated text in this case.
+
+    if (!responseText || responseText.trim() === "") {
+        // Check if it was truncated by the *model's* limit but resulted in empty text
+        if (finishReason === FinishReason.MAX_TOKENS) {
+             console.warn(`Gemini Summary Truncated (Model Limit): Resulted in empty text.`);
+             // Return empty string or throw? Let's return empty for now in this specific edge case.
+             return "";
+        }
+        console.error("Gemini Summary Error: Response text is empty.", data);
+        throw new Error(`Gemini returned an empty summary (Finish Reason: ${finishReason || 'Unknown'}).`);
+    }
+
+    // If MAX_TOKENS is the reason but text *is* present, log a warning but return the truncated text.
+    if (finishReason === FinishReason.MAX_TOKENS) {
+        console.warn(`Gemini Summary Truncated (Model Limit): Returning partial text.`);
+    }
+
+    return responseText.trim();
 }
+
 
 async function callAnthropicForSummary(apiKey: string, model: string, prompt: string): Promise<string> {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -114,19 +175,33 @@ async function callAnthropicForSummary(apiKey: string, model: string, prompt: st
         headers: {
             'Content-Type': 'application/json',
             'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01', // Use the appropriate API version
+            'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
             model: model,
             messages: [{ role: 'user', content: prompt }],
-            max_tokens: 500, // Adjust as needed
+            // REMOVED: max_tokens: 500,
             temperature: 0.5,
         }),
     });
     const data = await response.json();
+    const stopReason = data.stop_reason;
+
     if (!response.ok || !data.content?.[0]?.text) {
         console.error("Anthropic Summary Error:", data);
-        throw new Error(data.error?.message || `Anthropic API Error (${response.status})`);
+        const errorMsg = data.error?.message || `Anthropic API Error (${response.status})`;
+        // Check if truncation was the cause even with error/no text
+        if (stopReason === 'max_tokens') {
+             throw new Error('Anthropic summary truncated: Maximum output length reached.');
+        }
+        throw new Error(errorMsg);
+    }
+
+    // Check for truncation even on success
+    if (stopReason === 'max_tokens') {
+         console.warn(`Anthropic Summary Truncated: Reached model's maximum token limit.`);
+         // Allow truncated text to be returned, but log warning.
+         // throw new Error('Anthropic summary truncated: Maximum output length reached.');
     }
     return data.content[0].text.trim();
 }
@@ -179,7 +254,7 @@ export async function POST(request: NextRequest) {
             .from('user_settings')
             .select('summary_model, gemini_api_key_encrypted, openai_api_key_encrypted, anthropic_api_key_encrypted')
             .eq('user_id', userId)
-            .single(); // Use single as settings should exist if summary is called
+            .single();
 
         if (settingsError || !settings) {
             console.error(`Call Summary Error: Failed to fetch settings for user ${userId}:`, settingsError);
@@ -223,7 +298,8 @@ export async function POST(request: NextRequest) {
         slotResponses.forEach((slot, index) => {
             summaryPrompt += `--- Response ${index + 1} (${slot.modelName}) ---\n`;
             if (slot.response) {
-                summaryPrompt += `${slot.response}\n`;
+                // Keep truncation for input prompt construction as a safeguard
+                summaryPrompt += `${slot.response.substring(0, 1500)}${slot.response.length > 1500 ? '...' : ''}\n`;
             } else if (slot.error) {
                 summaryPrompt += `Error: ${slot.error}\n`;
             } else {
@@ -231,14 +307,12 @@ export async function POST(request: NextRequest) {
             }
             summaryPrompt += `---\n\n`;
         });
-        summaryPrompt += `Generate a concise, neutral summary combining the key information from these responses. Focus on presenting the aggregated facts or points without adding interpretation or bias.`;
-
-        console.log(`Call Summary: Constructed prompt for ${summaryModelString}:\n${summaryPrompt}`);
-
+        summaryPrompt += `Generate a concise, neutral summary combining the key information from these responses. Focus on presenting the aggregated facts or points without adding interpretation or bias.`; // Removed note about length constraint
 
         // 6. Call the appropriate AI provider API
         let summaryResult = '';
         try {
+            console.log(`Calling ${provider} model ${specificModel} for summary...`);
             if (provider === 'ChatGPT') {
                 summaryResult = await callOpenAIForSummary(apiKey, specificModel, summaryPrompt);
             } else if (provider === 'Gemini') {
@@ -246,13 +320,13 @@ export async function POST(request: NextRequest) {
             } else if (provider === 'Anthropic') {
                 summaryResult = await callAnthropicForSummary(apiKey, specificModel, summaryPrompt);
             }
+            console.log(`Call Summary: Successfully generated summary (potentially truncated by model) using ${summaryModelString}.`);
         } catch (aiError: any) {
             console.error(`Call Summary Error: AI API call failed for ${summaryModelString}:`, aiError);
-            return NextResponse.json({ error: `Failed to generate summary: ${aiError.message}` }, { status: 502 }); // 502 Bad Gateway
+            return NextResponse.json({ error: `Failed to generate summary: ${aiError.message}` }, { status: 502 });
         }
 
-        // 7. Return the summary
-        console.log(`Call Summary: Successfully generated summary using ${summaryModelString}.`);
+        // 7. Return the summary (even if potentially truncated by the model itself)
         return NextResponse.json({ summary: summaryResult }, { status: 200 });
 
     } catch (error: any) {

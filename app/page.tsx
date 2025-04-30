@@ -184,38 +184,63 @@ export default function Home() {
         }
     }, [user, isAuthLoading, fetchHistory, fetchSettingsForNewChat]); // selectedHistoryId removed, handled by history click
 
-    // --- Call Summary API ---
-    const callApiForSummary = useCallback(async (prompt: string, responses: AiSlotState[]) => {
+    // --- MODIFIED: Call Summary API (Initial or Update) ---
+    const callApiForSummary = useCallback(async (
+        latestPrompt: string, // Can be initial prompt or latest follow-up prompt
+        responses: AiSlotState[],
+        currentHistoryId: string | null, // null for initial, ID for update
+        previousSummaryText: string | null // null for initial, existing text for update
+    ) => {
         if (!summaryModelState) {
-            console.log("Skipping summary generation: No summary model configured.");
-            return null; // Indicate no summary was generated
+            console.log("Skipping summary generation/update: No summary model configured.");
+            return null; // Indicate no summary was generated/updated
         }
+
         const activeSlotResponses = responses
-            .filter(s => s.modelName && s.responseReceivedThisTurn) // Only include slots that responded this turn
+            .filter(s => s.modelName && s.responseReceivedThisTurn) // Only include slots that responded *this turn*
             .map(s => ({
                 modelName: s.modelName!,
                 response: s.response,
-                error: s.error // Pass error too, might be useful context for summary model
+                error: s.error
             }));
 
-        if (activeSlotResponses.length < 2) {
-            console.log("Skipping summary generation: Fewer than 2 slots responded.");
-             return null; // Don't generate summary for less than 2 responses
+        // Require at least 2 slots for initial summary, but allow update even if only 1 slot responded in the follow-up
+        if (!currentHistoryId && activeSlotResponses.length < 2) {
+            console.log("Skipping initial summary generation: Fewer than 2 slots responded.");
+            return null;
+        }
+        // Don't update summary if no slots responded this turn
+        if (currentHistoryId && activeSlotResponses.length === 0) {
+             console.log("Skipping summary update: No slots responded this turn.");
+             return null;
         }
 
-        console.log(`Attempting to generate summary using model: ${summaryModelState}`);
+        const isUpdate = !!currentHistoryId;
+        console.log(`Attempting to ${isUpdate ? 'update' : 'generate initial'} summary using model: ${summaryModelState}`);
         setSummaryLoading(true);
         setSummaryError(null);
-        setSummaryText(null);
+        // Don't clear summaryText immediately for updates, only for initial generation
+        if (!isUpdate) {
+             setSummaryText(null);
+        }
+
+        // Construct payload based on initial vs update
+        const payload: Record<string, any> = {
+            slotResponses: activeSlotResponses,
+        };
+        if (isUpdate) {
+            payload.interactionId = currentHistoryId;
+            payload.latestUserPrompt = latestPrompt; // The prompt that triggered these responses
+            payload.previousSummary = previousSummaryText ?? ''; // Send current summary
+        } else {
+            payload.initialPrompt = latestPrompt; // The very first prompt
+        }
 
         try {
             const apiResponse = await fetch('/api/call-summary', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    initialPrompt: prompt,
-                    slotResponses: activeSlotResponses,
-                }),
+                body: JSON.stringify(payload),
             });
             const result = await apiResponse.json().catch(() => ({ error: "Invalid JSON response from summary API" }));
 
@@ -223,22 +248,61 @@ export default function Home() {
                 throw new Error(result.error || `Summary API call failed (${apiResponse.status})`);
             }
             const generatedSummary = result.summary;
-            if (!generatedSummary) {
-                 throw new Error("Summary API returned an empty response.");
+            // Allow empty summary string as valid result now
+            if (typeof generatedSummary !== 'string') {
+                 throw new Error("Summary API returned an invalid response type.");
             }
-            console.log("Summary generated successfully.");
-            setSummaryText(generatedSummary);
+            console.log(`Summary ${isUpdate ? 'updated' : 'generated'} successfully.`);
+            setSummaryText(generatedSummary); // Update local state with the new summary
             setSummaryLoading(false);
-            return generatedSummary; // Return the summary text
+            return generatedSummary; // Return the new summary text
 
         } catch (error: any) {
-            console.error("Error calling summary API:", error);
+            console.error(`Error calling summary API (${isUpdate ? 'update' : 'initial'}):`, error);
             setSummaryError(error.message || "Unknown summary generation error");
             setSummaryLoading(false);
-            setSummaryText(null); // Clear summary text on error
-            return null; // Indicate summary generation failed
+            // Don't clear summary text on error if it was an update attempt
+            // if (!isUpdate) {
+            //     setSummaryText(null);
+            // }
+            return null; // Indicate summary generation/update failed
         }
     }, [summaryModelState]); // Depends only on the configured summary model
+
+
+    // --- NEW: Function to Update Summary in DB ---
+    const updateSummaryInDb = useCallback(async (interactionId: string, newSummary: string) => {
+        if (!user || !interactionId) {
+            console.warn("Skipping summary update in DB: Missing user or interactionId.");
+            return;
+        }
+        console.log(`Attempting to update summary in DB for interaction ID: ${interactionId}`);
+        try {
+            const response = await fetch('/api/update-summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ interactionId, newSummary }),
+            });
+            const result = await response.json().catch(() => ({ success: false, error: 'Invalid JSON response' }));
+
+            if (!response.ok || !result.success) {
+                const errorMsg = result?.error || `HTTP ${response.status}`;
+                console.error('Failed to update summary in DB:', errorMsg);
+                // Display a non-blocking error in the summary panel maybe?
+                setSummaryError(prev => prev ? `${prev}\nSave Error.` : `Failed to save updated summary.`);
+            } else {
+                console.log(`Successfully updated summary in DB for interaction ID: ${interactionId}`);
+                // Clear save error if it existed
+                setSummaryError(prev => prev?.replace(/Failed to save updated summary\.?(\n|$)/, '') || null);
+                 // Optional: Update history item locally if needed, but might not be necessary
+                 // setHistory(prev => prev.map(h => h.id === interactionId ? { ...h, summary: newSummary } : h));
+            }
+        } catch (error) {
+            console.error('Network error calling update-summary API:', error);
+            const errorMsg = error instanceof Error ? error.message : 'Network error';
+            setSummaryError(prev => prev ? `${prev}\nNetwork Save Error.` : `Network error saving summary.`);
+        }
+    }, [user]); // Depends on user session
 
     // --- Log Initial Interaction (Now includes Summary) ---
     const logInitialInteraction = useCallback(async (promptToLog: string, finalSlotStates: AiSlotState[], generatedSummary: string | null) => {
@@ -351,77 +415,95 @@ export default function Home() {
         }
     }, [user, fetchHistory]); // fetchHistory is stable
 
-    // --- useEffect to Trigger Summary Generation and Logging After Initial AI Calls Complete ---
+    // --- MODIFIED: useEffect to Trigger Summary Generation/Update and Logging After AI Calls Complete ---
     useEffect(() => {
         const anySlotLoading = slotStates.some(slot => slot.loading);
         const anySummaryLoading = summaryLoading;
+        const slotsJustFinished = slotStates.some(s => s.responseReceivedThisTurn && !s.loading); // Check if any slot *just* finished
 
-        // Exit if not flagged, or if any slot/summary is still loading, OR if already processing this step
-        if (!needsSummaryAndLog || anySlotLoading || anySummaryLoading || isProcessingSummaryAndLog.current) {
-            // console.log(`Summary/Log Check: needs=${needsSummaryAndLog}, slotLoading=${anySlotLoading}, summaryLoading=${anySummaryLoading}, processingRef=${isProcessingSummaryAndLog.current}`);
+        // Exit if summary model isn't set, or if slots/summary are still loading, or if already processing this step
+        if (!summaryModelState || anySlotLoading || anySummaryLoading || isProcessingSummaryAndLog.current) {
+            // console.log(`Summary Trigger Check: model=${!!summaryModelState}, slotLoading=${anySlotLoading}, summaryLoading=${anySummaryLoading}, processingRef=${isProcessingSummaryAndLog.current}`);
             return;
         }
 
-        if (currentChatPrompt && slotStates.length > 0) {
-            const activeSlots = slotStates.filter(s => s.modelName);
-            const allActiveSlotsResponded = activeSlots.every(s => s.responseReceivedThisTurn);
+        // Check if all *active* slots have received a response *this turn*
+        const activeSlots = slotStates.filter(s => s.modelName);
+        const allActiveSlotsRespondedThisTurn = activeSlots.length > 0 && activeSlots.every(s => s.responseReceivedThisTurn);
 
-            if (allActiveSlotsResponded) {
-                console.log("All active slots finished initial response, proceeding with summary/log...");
-                isProcessingSummaryAndLog.current = true; // Set the ref flag to prevent re-entry
+        // Determine if this is the initial prompt turn or a follow-up
+        const isInitialTurn = !selectedHistoryId && needsSummaryAndLog;
+        const isFollowUpTurn = !!selectedHistoryId && !!lastSubmittedPrompt && slotsJustFinished; // Trigger on follow-up when slots finish
 
-                // Define an async function to handle summary and logging sequence
-                const processSummaryAndLog = async () => {
-                    try {
-                        let generatedSummary: string | null = null;
-                        // Only call summary API if model is set and it's the first turn
-                        // Check selectedHistoryId again *inside* async function as state might change
-                        if (summaryModelState && !selectedHistoryId) {
-                            generatedSummary = await callApiForSummary(currentChatPrompt, slotStates);
-                            // If summary generation fails, summaryError state will be set by callApiForSummary
-                        } else {
-                            console.log("Skipping summary call: No model configured or not initial prompt.");
-                        }
+        if (allActiveSlotsRespondedThisTurn && (isInitialTurn || isFollowUpTurn)) {
+            console.log(`All active slots finished response for ${isInitialTurn ? 'initial' : 'follow-up'} turn. Proceeding with summary/log/update...`);
+            isProcessingSummaryAndLog.current = true; // Set lock
 
-                        // Always attempt to log after summary attempt (even if summary failed/skipped)
-                        // Check selectedHistoryId again before logging to be absolutely sure it's the initial log
-                        if (!selectedHistoryId) {
-                            await logInitialInteraction(currentChatPrompt, slotStates, generatedSummary);
-                        } else {
-                            console.warn("Summary/Log effect: selectedHistoryId became non-null before logInitialInteraction call. Skipping log.");
-                            setNeedsSummaryAndLog(false); // Ensure flag is reset if log is skipped here
-                        }
-                    } catch (error) {
-                        console.error("Error during processSummaryAndLog execution:", error);
-                        // Reset flag even if there's an error in this wrapper
-                        setNeedsSummaryAndLog(false);
-                    } finally {
-                        isProcessingSummaryAndLog.current = false; // Reset the ref flag
-                        // Note: setNeedsSummaryAndLog(false) is also handled within logInitialInteraction's finally block
+            // Define async function to handle the sequence
+            const processTurnCompletion = async () => {
+                try {
+                    const currentPromptForSummary = isInitialTurn ? currentChatPrompt : lastSubmittedPrompt;
+                    if (!currentPromptForSummary) {
+                        console.warn("Cannot process summary: Current prompt is missing.");
+                        return; // Exit if prompt is somehow missing
                     }
-                };
 
-                // Execute the sequence
-                processSummaryAndLog();
+                    // Call the summary API (handles both initial and update based on selectedHistoryId)
+                    const newSummary = await callApiForSummary(
+                        currentPromptForSummary,
+                        slotStates,
+                        selectedHistoryId, // null for initial, ID for update
+                        summaryText // Current summary text (null for initial)
+                    );
 
-            } else {
-                // Log which slots are still pending (useful for debugging)
-                const notResponded = activeSlots.filter(s => !s.responseReceivedThisTurn);
-                if (notResponded.length > 0) { console.log(`Waiting for slots to respond before summary/log: ${notResponded.map((s, i) => `Slot ${slotStates.findIndex(st => st === s) + 1}`).join(', ')}`); }
-                else if (activeSlots.length > 0) { console.log("Waiting for all active slots to respond before summary/log (state inconsistency?)."); }
-                else { console.log("No active slots found to wait for."); }
-            }
+                    // --- Handle Outcome ---
+                    if (isInitialTurn) {
+                        // If it was the initial turn, log the interaction (includes the initial summary)
+                        await logInitialInteraction(currentPromptForSummary, slotStates, newSummary);
+                        // logInitialInteraction resets needsSummaryAndLog
+                    } else if (isFollowUpTurn && typeof newSummary === 'string') {
+                        // If it was a follow-up and summary was successfully updated, save it to DB
+                        await updateSummaryInDb(selectedHistoryId, newSummary);
+                        // Reset the 'last submitted prompt' after processing the follow-up summary to prevent re-triggering
+                        // setLastSubmittedPrompt(null); // Maybe not needed if dependencies are right? Let's test without first.
+                    } else if (isFollowUpTurn && newSummary === null) {
+                        // Follow-up summary failed or was skipped
+                        console.log("Summary update skipped or failed for follow-up turn.");
+                    }
+
+                } catch (error) {
+                    console.error("Error during processTurnCompletion execution:", error);
+                    // Ensure flags/locks are reset even on error
+                    if (isInitialTurn) setNeedsSummaryAndLog(false);
+                } finally {
+                    isProcessingSummaryAndLog.current = false; // Release lock
+                    // Reset the responseReceivedThisTurn flag for all slots after processing
+                    setSlotStates(prev => prev.map(s => ({ ...s, responseReceivedThisTurn: false })));
+                }
+            };
+
+            // Execute the sequence
+            processTurnCompletion();
+
         } else {
-            // Reset flag if conditions aren't met (e.g., prompt cleared before slots finish)
-            if (needsSummaryAndLog) {
-                console.log("Resetting needsSummaryAndLog flag because conditions (prompt, slots) are no longer met.");
-                setNeedsSummaryAndLog(false);
-            }
+             // Optional: Add logging for why it didn't trigger if needed for debugging
+             // if (slotsJustFinished) { console.log("Summary trigger check: Not all active slots responded this turn."); }
         }
-    // Dependencies: Include all states read and functions called
+    // Dependencies: Trigger when slots change (specifically responseReceivedThisTurn),
+    // or when flags/IDs controlling the turn type change.
+    // Also include functions called.
     }, [
-        slotStates, needsSummaryAndLog, currentChatPrompt, summaryLoading,
-        summaryModelState, selectedHistoryId, callApiForSummary, logInitialInteraction
+        slotStates, // Primary trigger: when slot responses/loading states change
+        needsSummaryAndLog, // For initial turn logic
+        selectedHistoryId, // To differentiate initial vs follow-up
+        currentChatPrompt, // For initial summary context
+        lastSubmittedPrompt, // For follow-up summary context
+        summaryText, // For previous summary context
+        summaryModelState, // To check if summary is configured
+        summaryLoading, // Prevent re-entry while loading
+        callApiForSummary,
+        logInitialInteraction,
+        updateSummaryInDb
     ]);
 
 

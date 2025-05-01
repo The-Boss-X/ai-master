@@ -23,30 +23,43 @@ export default function RootLayout({
   return (
     <html lang="en">
       {/* Apply font className */}
-      <body className={`${inter.className} flex flex-col min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100`}>
+      {/*
+        CHANGE 1: Use `h-screen` instead of `min-h-screen`.
+                  This forces the body to be exactly the viewport height.
+        CHANGE 2: Add `overflow-hidden`.
+                  This prevents the body itself from showing scrollbars
+                  if content technically tries to overflow it.
+      */}
+      <body className={`${inter.className} flex flex-col h-screen overflow-hidden bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100`}>
         {/* AuthProvider wraps everything to provide context */}
         <AuthProvider>
-          {/* Header Section */}
+          {/* Header Section - No changes needed here.
+              It occupies its space, and `flex-shrink-0` prevents it from shrinking.
+              `sticky` ensures it stays visible on scroll within the bounds established by the body.
+          */}
           <header className="bg-white dark:bg-gray-800 shadow-sm p-4 sticky top-0 z-10 flex-shrink-0 border-b dark:border-gray-700">
-            <div className="container mx-auto flex justify-between items-center px-4"> {/* Added padding */}
-              {/* App Title */}
+            <div className="w-full flex justify-between items-center">
               <h1 className="text-xl font-semibold text-gray-800 dark:text-gray-100">
                 AI Master
               </h1>
-              {/* Account Button */}
               <div>
                 <AccountButton /> {/* Include the AccountButton component */}
               </div>
             </div>
           </header>
-
+  
           {/* Main content area takes remaining height */}
-          {/* The children will include the page content (e.g., app/page.tsx) */}
-          <div className="flex-grow">
+          {/*
+            CHANGE 3: Add `overflow-y-auto`.
+                      This tells the div to take up the remaining space (due to flex-grow)
+                      AND show a vertical scrollbar ONLY IF the content (`children`)
+                      rendered inside it is taller than the available space.
+          */}
+          <div className="flex-grow overflow-y-auto">
             {children}
           </div>
-
-          {/* Optional Footer */}
+  
+          {/* Optional Footer - If uncommented, flex-shrink-0 is important here too */}
           {/*
           <footer className="bg-gray-200 dark:bg-gray-800 p-4 text-center text-sm text-gray-600 dark:text-gray-400 flex-shrink-0 border-t dark:border-gray-700">
             Footer content here

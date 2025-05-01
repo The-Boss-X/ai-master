@@ -1069,7 +1069,7 @@ export default function Home() {
 
     // --- Render Component JSX ---
     return (
-        <div className="flex h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 overflow-hidden">
+        <div className="flex h-full bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 overflow-hidden">
             {/* History Sidebar */}
             <HistorySidebar
                 history={history} historyLoading={historyLoading || isAuthLoading} historyError={historyError}

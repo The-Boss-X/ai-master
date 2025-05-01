@@ -182,10 +182,12 @@
                 {!historyLoading && isLoggedIn && (
                     <div className="flex flex-col flex-grow overflow-hidden"> {/* Added flex-grow and overflow-hidden */}
                         {/* Error Display Area */}
+                        {(historyError || deleteError) && (
                         <div className="mb-2 h-4 flex-shrink-0"> {/* Reserve space for errors */}
                             {historyError && <p className="text-red-500 dark:text-red-400 text-xs truncate" title={historyError}>Error: {historyError}</p>}
                             {deleteError && <p className="text-red-500 dark:text-red-400 text-xs truncate" title={deleteError}>{deleteError}</p>}
                         </div>
+                        )}
 
                         {/* History List or Empty State */}
                         {/* Added flex-grow and overflow-y-auto here */}

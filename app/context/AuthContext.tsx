@@ -1,4 +1,4 @@
-// context/AuthContext.tsx
+// app/context/AuthContext.tsx
 'use client'; // Essential for hooks like useState, useEffect, useContext
 
 import React, {
@@ -12,123 +12,141 @@ import React, {
 import { User, Session } from '@supabase/supabase-js';
 // Assuming your configured client-side Supabase client is here:
 // IMPORTANT: Ensure this client uses createBrowserClient from @supabase/ssr
-import supabaseClient from '../../lib/supabaseClient'; // Adjust path if needed
+// or createClient from @supabase/supabase-js if not using SSR features needing cookies.
+// Make sure this path is correct for your project structure
+import supabaseClient from '../../lib/supabaseClient';
 
-// 1. Define the Interface for the Context Value (Unchanged)
+// 1. Define the Interface for the Context Value
 interface AuthContextType {
-  user: User | null;
-  session: Session | null;
-  isLoading: boolean; // Tracks initial auth state loading
+  user: User | null; // The authenticated Supabase user object, or null
+  session: Session | null; // The active Supabase session object, or null
+  isLoading: boolean; // Tracks initial auth state loading (true until first check completes)
   signOut: () => Promise<void>; // Function to sign out the user
 }
 
-// 2. Create the Context (Unchanged)
-// Initialize with undefined to help catch usage outside the provider
+// 2. Create the Context
+// Initialize with undefined to help catch usage outside the provider during development
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// 3. Create the Custom Hook for Consuming the Context (Unchanged)
+// 3. Create the Custom Hook for Consuming the Context
 /**
  * Hook to easily access authentication state (user, session, loading) and actions (signOut).
- * Must be used within a component wrapped by AuthProvider.
+ * Throws an error if used outside of an AuthProvider.
+ * @returns {AuthContextType} The authentication context value.
  */
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
   if (context === undefined) {
+    // This error helps ensure the hook is used correctly within the component tree
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
 };
 
-// 4. Create the Provider Component (Refactored State and Effect)
+// 4. Create the Provider Component
 interface AuthProviderProps {
-  children: ReactNode; // To wrap around other components
+  children: ReactNode; // To wrap around other components that need auth context
 }
 
 /**
- * Provides authentication state (user, session, loading) and sign-out functionality
- * to its children components via the AuthContext.
+ * AuthProvider component manages and provides authentication state (user, session, loading)
+ * and the signOut function to its children components via the AuthContext.
+ * It fetches the initial session state and listens for real-time auth changes from Supabase.
  */
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // State variables managed by the provider
-  // We only strictly need to store the session; user can be derived.
   const [session, setSession] = useState<Session | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true); // Start true until initial check
+  const [isLoading, setIsLoading] = useState<boolean>(true); // Start loading until initial check
 
-  // Effect to fetch initial session and listen for auth changes
+  // Effect to fetch initial session and set up the auth state change listener
   useEffect(() => {
-    // Async function to check the initial session state
+    // Flag to prevent state updates if the component unmounts quickly
+    let isMounted = true;
+
+    // Async function to check the initial session state on component mount
     const fetchInitialSession = async () => {
       try {
-        // Use the client-side Supabase client instance
+        // Use the client-side Supabase client instance to get the current session
         const { data: { session: initialSession }, error } = await supabaseClient.auth.getSession();
 
         if (error) {
-          // Log error but allow the flow to continue to finally block
           console.error("AuthContext: Error fetching initial session:", error.message);
         }
 
-        // Update session state. React handles updates correctly even if component unmounts quickly.
-        setSession(initialSession);
-        console.log("AuthContext: Initial session check complete.", initialSession ? `User: ${initialSession.user.id}` : "No initial session.");
+        // Only update state if the component is still mounted
+        if (isMounted) {
+          setSession(initialSession);
+          console.log("AuthContext: Initial session check complete.", initialSession ? `User: ${initialSession.user.id}` : "No initial session.");
+        }
 
       } catch (err) {
         console.error("AuthContext: Unexpected error during initial session fetch:", err);
-        // Ensure session state reflects failure if needed (though null is likely correct)
-        setSession(null);
+        if (isMounted) {
+          setSession(null); // Ensure session is null on unexpected error
+        }
       } finally {
-        // Mark loading as false once the initial check attempt is complete
-        setIsLoading(false);
+        // Mark loading as false once the initial check attempt is complete, if mounted
+        if (isMounted) {
+          setIsLoading(false);
+        }
       }
     };
 
-    // Run the initial check
+    // Run the initial session check
     fetchInitialSession();
 
-    // Subscribe to Supabase auth state changes
+    // Subscribe to Supabase auth state changes (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.)
     const { data: authListener } = supabaseClient.auth.onAuthStateChange(
       (_event, newSession) => {
-        // Listener updates the session state directly
-        console.log(`AuthContext: Auth state changed (Event: ${_event})`, newSession ? `New User: ${newSession.user.id}` : "User signed out");
-        setSession(newSession);
-        // It's possible an auth event happens *during* the initial load,
-        // ensure loading is false after any auth event.
-        setIsLoading(false);
+        // This listener callback runs whenever the auth state changes
+        if (isMounted) {
+          console.log(`AuthContext: Auth state changed (Event: ${_event})`, newSession ? `New User: ${newSession.user.id}` : "User signed out");
+          // Update the session state with the new session (or null if signed out)
+          setSession(newSession);
+          // Ensure loading is false after any auth event occurs
+          setIsLoading(false);
+        }
       }
     );
 
-    // Cleanup function: Automatically called on component unmount.
-    // Unsubscribes the listener.
+    // Cleanup function: This runs when the component unmounts
     return () => {
+      isMounted = false; // Set flag to prevent state updates after unmount
+      // Unsubscribe the listener to prevent memory leaks
       if (authListener?.subscription) {
         authListener.subscription.unsubscribe();
         console.log("AuthContext: Unsubscribed from auth state changes.");
       }
     };
-  }, []); // Empty dependency array ensures this runs only once on mount
+  }, []); // Empty dependency array ensures this effect runs only once on mount
 
-  // Sign out function (Unchanged, useCallback is appropriate)
+  // Sign out function, wrapped in useCallback for performance optimization
+  // Prevents unnecessary re-creation if passed down as a prop
   const handleSignOut = useCallback(async () => {
     try {
+      // Call Supabase's signOut method
       const { error } = await supabaseClient.auth.signOut();
       if (error) {
         console.error("AuthContext: Error signing out:", error.message);
       }
-      // The onAuthStateChange listener will handle setting session to null
+      // No need to manually set session to null here;
+      // the onAuthStateChange listener will detect the SIGNED_OUT event and update the state.
     } catch (err) {
       console.error("AuthContext: Unexpected error during sign out:", err);
     }
-  }, []);
+  }, []); // No dependencies, so this function is stable
 
-  // Prepare the value object provided by the context
-  // Derive the 'user' directly from the 'session' state
+  // Prepare the value object to be provided by the context
+  // Derive the 'user' directly from the 'session' state for convenience
   const contextValue: AuthContextType = {
-    user: session?.user ?? null, // User is derived from the session state
-    session,
-    isLoading,
-    signOut: handleSignOut,
+    user: session?.user ?? null, // Provide the user object or null if no session
+    session,                     // Provide the full session object or null
+    isLoading,                   // Provide the loading status
+    signOut: handleSignOut,      // Provide the signOut function
   };
 
-  // Provide the context value to children
+  // Render the AuthContext.Provider, passing the context value
+  // Wrap the children components, making the context available to them
   return (
     <AuthContext.Provider value={contextValue}>
       {children}

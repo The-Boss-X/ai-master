@@ -38,41 +38,39 @@ export async function GET(request: NextRequest) {
     console.log(`Get Token Usage: Fetching data for user ${userId}`);
 
     // 1. Fetch total tokens used from user_settings
-    // RLS must allow the user to SELECT their own settings row.
     const { data: settingsData, error: settingsError } = await supabase
       .from('user_settings')
-      .select('total_tokens_used_overall, updated_at') // Also fetch updated_at for context
+      .select('total_tokens_used_overall, updated_at')
       .eq('user_id', userId)
-      .single(); // Expect one row or null (if no settings yet)
+      .single();
 
-    if (settingsError && settingsError.code !== 'PGRST116') { // PGRST116: 0 rows, which is fine
+    if (settingsError && settingsError.code !== 'PGRST116') { 
       console.error(`Get Token Usage: Error fetching total_tokens_used_overall for user ${userId}:`, settingsError);
       return NextResponse.json({ error: 'Failed to fetch total token usage.' }, { status: 500 });
     }
     const totalTokensOverall = settingsData?.total_tokens_used_overall ?? 0;
     const settingsLastUpdated = settingsData?.updated_at ?? null;
 
-    // 2. Fetch recent token usage logs (e.g., last 20 calls) for more detailed display
-    // RLS must allow the user to SELECT their own logs from token_usage_log.
+    // 2. Fetch ALL token usage logs for the user
+    // REMOVED .limit(20) to fetch all logs
     const { data: recentLogs, error: logsError } = await supabase
       .from('token_usage_log')
       .select('created_at, provider, model_name, input_tokens, output_tokens, total_tokens_for_call, interaction_id, slot_number')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(20); // Adjust limit as needed
+      .order('created_at', { ascending: false }); // Keep ordering
 
     if (logsError) {
-      console.error(`Get Token Usage: Error fetching recent token logs for user ${userId}:`, logsError);
-      // Still return total, but indicate logs couldn't be fetched
+      console.error(`Get Token Usage: Error fetching token logs for user ${userId}:`, logsError);
       return NextResponse.json({
         total_tokens_overall: totalTokensOverall,
         settings_last_updated: settingsLastUpdated,
         recent_logs: [],
-        logs_error: 'Failed to fetch recent usage logs.',
-      }, { status: 200 }); // Return 200 as total is still valid
+        logs_error: 'Failed to fetch usage logs.', // Keep this specific error for logs
+        error: 'Failed to fetch usage logs.', // General error if only logs failed
+      }, { status: 500 }); // Return 500 if logs fail as it's part of the core request
     }
 
-    console.log(`Get Token Usage: Successfully fetched data for user ${userId}. Total tokens: ${totalTokensOverall}, Recent logs count: ${recentLogs?.length ?? 0}`);
+    console.log(`Get Token Usage: Successfully fetched data for user ${userId}. Total tokens: ${totalTokensOverall}, All logs count: ${recentLogs?.length ?? 0}`);
     return NextResponse.json({
       total_tokens_overall: totalTokensOverall,
       settings_last_updated: settingsLastUpdated,

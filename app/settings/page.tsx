@@ -43,6 +43,7 @@ type AiModelOption = typeof MODEL_OPTIONS[number] | '';
 // --- Constants ---
 const MIN_SLOTS = 1;
 const MAX_SLOTS = 6;
+const INITIAL_LOGS_DISPLAY_COUNT = 7; // Number of logs to show before scrolling
 
 // --- Types ---
 interface SettingsState {
@@ -64,7 +65,6 @@ interface FetchedSettings {
     summary_model: string | null;
 }
 
-// Types for Token Usage Data
 interface TokenLogEntry {
     created_at: string;
     provider: string;
@@ -79,10 +79,10 @@ interface TokenLogEntry {
 interface TokenUsageState {
     total_tokens_overall: number;
     settings_last_updated: string | null;
-    recent_logs: TokenLogEntry[];
+    all_logs: TokenLogEntry[]; // Changed from recent_logs to all_logs
     loading: boolean;
     error: string | null;
-    logs_error?: string | null; // Added this field
+    logs_error?: string | null;
 }
 
 export default function SettingsPage() {
@@ -107,10 +107,10 @@ export default function SettingsPage() {
     const [tokenUsage, setTokenUsage] = useState<TokenUsageState>({
         total_tokens_overall: 0,
         settings_last_updated: null,
-        recent_logs: [],
+        all_logs: [], // Changed
         loading: true,
         error: null,
-        logs_error: null, // Initialize
+        logs_error: null,
     });
 
     const fetchSettings = useCallback(async () => {
@@ -170,7 +170,7 @@ export default function SettingsPage() {
 
     const fetchTokenUsage = useCallback(async () => {
         if (!user) {
-            setTokenUsage({ total_tokens_overall: 0, settings_last_updated: null, recent_logs: [], loading: false, error: null, logs_error: null });
+            setTokenUsage({ total_tokens_overall: 0, settings_last_updated: null, all_logs: [], loading: false, error: null, logs_error: null });
             return;
         }
         setTokenUsage(prev => ({ ...prev, loading: true, error: null, logs_error: null }));
@@ -188,14 +188,14 @@ export default function SettingsPage() {
             setTokenUsage({
                 total_tokens_overall: data.total_tokens_overall || 0,
                 settings_last_updated: data.settings_last_updated || null,
-                recent_logs: data.recent_logs || [],
+                all_logs: data.recent_logs || [], // API returns it as recent_logs, store as all_logs
                 loading: false,
-                error: data.error || null, // General error for the whole fetch
-                logs_error: data.logs_error || null, // Specific error for recent logs part
+                error: data.error || null,
+                logs_error: data.logs_error || null,
             });
         } catch (error: any) {
             console.error("Error fetching token usage:", error);
-            setTokenUsage({ total_tokens_overall: 0, settings_last_updated: null, recent_logs: [], loading: false, error: error.message || "Failed to load token usage.", logs_error: null });
+            setTokenUsage({ total_tokens_overall: 0, settings_last_updated: null, all_logs: [], loading: false, error: error.message || "Failed to load token usage.", logs_error: null });
         }
     }, [user]);
 
@@ -208,7 +208,7 @@ export default function SettingsPage() {
             setModelSettings({ modelSelections: Array(MAX_SLOTS).fill(''), summaryModelSelection: '' });
             setApiKeySettings({ geminiApiKey: '', openaiApiKey: '', anthropicApiKey: '' });
             setNumberOfSlots(MIN_SLOTS);
-            setTokenUsage({ total_tokens_overall: 0, settings_last_updated: null, recent_logs: [], loading: false, error: null, logs_error: null });
+            setTokenUsage({ total_tokens_overall: 0, settings_last_updated: null, all_logs: [], loading: false, error: null, logs_error: null });
         }
     }, [user, isAuthLoading, fetchSettings, fetchTokenUsage]);
 
@@ -271,7 +271,7 @@ export default function SettingsPage() {
         }
     };
 
-    if (isAuthLoading || (isLoadingSettings && !user && !tokenUsage.error)) { // Show main loading if settings are loading and no token error yet
+    if (isAuthLoading || (isLoadingSettings && !user && !tokenUsage.error)) {
         return (
             <div className="flex items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900">
                 <div className="flex items-center space-x-3">
@@ -336,7 +336,7 @@ export default function SettingsPage() {
                             <p className="text-gray-600 dark:text-gray-400">Loading token usage...</p>
                         </div>
                     )}
-                    {tokenUsage.error && !tokenUsage.loading && ( // Show general error if not loading
+                    {tokenUsage.error && !tokenUsage.loading && (
                         <div className="p-3 text-center text-red-700 bg-red-100 border border-red-300 rounded-md dark:bg-red-900/50 dark:text-red-200 dark:border-red-700/60">
                             {tokenUsage.error}
                         </div>
@@ -355,13 +355,14 @@ export default function SettingsPage() {
                                 )}
                             </div>
                             <div>
-                                <h3 className="text-lg font-medium text-gray-700 dark:text-gray-300 mb-2">Recent Usage (Last {tokenUsage.recent_logs.length} calls):</h3>
-                                {tokenUsage.recent_logs.length === 0 && !tokenUsage.logs_error ? (
-                                    <p className="text-sm text-gray-500 dark:text-gray-400">No recent usage logs found.</p>
+                                <h3 className="text-lg font-medium text-gray-700 dark:text-gray-300 mb-2">Usage Log ({tokenUsage.all_logs.length} calls):</h3>
+                                {tokenUsage.all_logs.length === 0 && !tokenUsage.logs_error ? (
+                                    <p className="text-sm text-gray-500 dark:text-gray-400">No usage logs found.</p>
                                 ) : (
-                                    <div className="overflow-x-auto rounded-md border border-gray-200 dark:border-gray-700 max-h-80 custom-scrollbar">
+                                    // MODIFIED: Added max-h-[calc(7*2.5rem+2rem)] for approx 7 items + header, and overflow-y-auto
+                                    <div className="overflow-x-auto rounded-md border border-gray-200 dark:border-gray-700 max-h-[calc(7*2.5rem+2rem)] overflow-y-auto custom-scrollbar">
                                         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                                            <thead className="bg-gray-50 dark:bg-gray-700/50 sticky top-0">
+                                            <thead className="bg-gray-50 dark:bg-gray-700/50 sticky top-0 z-10">
                                                 <tr>
                                                     <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Time</th>
                                                     <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Provider</th>
@@ -372,11 +373,11 @@ export default function SettingsPage() {
                                                 </tr>
                                             </thead>
                                             <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                                                {tokenUsage.recent_logs.map((log, index) => (
+                                                {tokenUsage.all_logs.map((log, index) => (
                                                     <tr key={index} className={index % 2 === 0 ? 'bg-white dark:bg-gray-800' : 'bg-gray-50 dark:bg-gray-800/70'}>
                                                         <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">{new Date(log.created_at).toLocaleString()}</td>
                                                         <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700 dark:text-gray-300">{log.provider}</td>
-                                                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700 dark:text-gray-300 truncate max-w-xs" title={log.model_name}>{log.model_name}</td>
+                                                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700 dark:text-gray-300 truncate max-w-[150px] sm:max-w-xs" title={log.model_name}>{log.model_name}</td>
                                                         <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700 dark:text-gray-300 text-right">{log.input_tokens.toLocaleString()}</td>
                                                         <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700 dark:text-gray-300 text-right">{log.output_tokens.toLocaleString()}</td>
                                                         <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-800 dark:text-gray-200 font-medium text-right">{log.total_tokens_for_call.toLocaleString()}</td>
@@ -386,7 +387,7 @@ export default function SettingsPage() {
                                         </table>
                                     </div>
                                 )}
-                                {tokenUsage.logs_error && ( // Display specific error for logs if it exists
+                                {tokenUsage.logs_error && (
                                      <p className="text-xs text-red-500 dark:text-red-400 mt-1">{tokenUsage.logs_error}</p>
                                 )}
                             </div>

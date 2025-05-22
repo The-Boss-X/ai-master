@@ -1,11 +1,12 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/call-openai/route.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import OpenAI from 'openai';
 import crypto from 'crypto';
+import { recordTokenUsage } from '../../../lib/tokenUtils'; // Adjusted path
 
 // Define structure for a single message in the history
 interface ConversationMessage {
@@ -17,14 +18,14 @@ interface ConversationMessage {
 interface CallOpenAIRequest {
   prompt: string; // The latest user prompt
   model: string; // Specific OpenAI model name (e.g., 'gpt-4o')
-  slotNumber: 1 | 2 | 3; // Still needed for context/logging if desired, but not for key fetching
+  slotNumber: 1 | 2 | 3 | 4 | 5 | 6; // Updated to 6 slots
   conversationHistory?: ConversationMessage[]; // Optional: History sent from client
+  interactionId?: string | null; // Added to link token usage to an interaction
 }
 
-// **MODIFIED**: Explicitly type the expected shape of the relevant settings object fetched from Supabase
+// Explicitly type the expected shape of the relevant settings object fetched from Supabase
 interface UserOpenAISettings {
     openai_api_key_encrypted: string | null;
-    // Add other settings if needed, but only the key is required here
 }
 
 
@@ -37,20 +38,32 @@ const AUTH_TAG_LENGTH = 16;
 function decryptData(encryptedTextHex: string, secretKeyHex: string): string | null {
   try {
     if (!encryptedTextHex) return null;
-    if (secretKeyHex.length !== 64) throw new Error('Decryption key must be 64 hex chars.');
+    if (secretKeyHex.length !== 64) throw new Error('Decryption key must be a 64-character hex string (32 bytes).');
     const key = Buffer.from(secretKeyHex, 'hex');
+    
+    // Extract IV, AuthTag, and EncryptedData from the combined hex string
     const ivHex = encryptedTextHex.slice(0, IV_LENGTH * 2);
     const authTagHex = encryptedTextHex.slice(IV_LENGTH * 2, (IV_LENGTH + AUTH_TAG_LENGTH) * 2);
     const encryptedDataHex = encryptedTextHex.slice((IV_LENGTH + AUTH_TAG_LENGTH) * 2);
-    if (ivHex.length !== IV_LENGTH * 2 || authTagHex.length !== AUTH_TAG_LENGTH * 2 || !encryptedDataHex) throw new Error('Invalid encrypted data format.');
+
+    if (ivHex.length !== IV_LENGTH * 2 || authTagHex.length !== AUTH_TAG_LENGTH * 2 || !encryptedDataHex) {
+        console.error('Decrypt Error: Invalid encrypted data format (lengths). IV_LENGTH_HEX:', ivHex.length, 'AUTH_TAG_LENGTH_HEX:', authTagHex.length);
+        throw new Error('Invalid encrypted data format: component lengths incorrect.');
+    }
+
     const iv = Buffer.from(ivHex, 'hex');
     const authTag = Buffer.from(authTagHex, 'hex');
+    
     const decipher = crypto.createDecipheriv(algorithm, key, iv);
-    decipher.setAuthTag(authTag);
+    decipher.setAuthTag(authTag); // Set the authentication tag
+
     let decrypted = decipher.update(encryptedDataHex, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
     return decrypted;
-  } catch (error) { console.error('Decryption failed:', error); return null; }
+  } catch (error: any) { 
+    console.error('Decryption failed:', error.message, error.stack); 
+    return null; 
+  }
 }
 // --- End Decryption Helper ---
 
@@ -81,92 +94,100 @@ export async function POST(request: NextRequest) {
 
     let payload: CallOpenAIRequest;
     try { payload = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 }); }
-    const { prompt, model, slotNumber, conversationHistory } = payload;
+    const { prompt, model, slotNumber, conversationHistory, interactionId } = payload;
 
-    if (!prompt || !model || !slotNumber) { // slotNumber still useful for logging/context
+    if (!prompt || !model || !slotNumber) {
       return NextResponse.json({ error: 'Missing required fields (prompt, model, slotNumber).' }, { status: 400 });
     }
 
-    // **MODIFIED**: Fetch and decrypt the centralized OpenAI API Key
     const { data: settingsData, error: fetchError } = await supabase
         .from('user_settings')
-        .select('openai_api_key_encrypted') // Select the specific column
+        .select('openai_api_key_encrypted')
         .eq('user_id', userId)
         .single();
-
-    // Cast fetched data to the specific type
     const settings = settingsData as UserOpenAISettings | null;
 
     if (fetchError) {
-        if (fetchError?.code === 'PGRST116') { // Handle case where user has no settings row yet
+        if (fetchError?.code === 'PGRST116') {
             console.warn(`Call OpenAI: No settings found for user ${userId}.`);
             return NextResponse.json({ error: 'OpenAI API Key not configured in Settings.' }, { status: 400 });
         }
         console.error(`Call OpenAI: Database error fetching API key for user ${userId}:`, fetchError);
         return NextResponse.json({ error: 'Database error fetching API Key.' }, { status: 500 });
     }
-
-     if (!settings) { // Should be caught by PGRST116, but double-check
-        console.warn(`Call OpenAI: Settings object null for user ${userId} even after successful fetch.`);
+     if (!settings) {
+        console.warn(`Call OpenAI: Settings object null for user ${userId}.`);
         return NextResponse.json({ error: 'OpenAI API Key not configured in Settings.' }, { status: 400 });
     }
-
-    const encryptedApiKey = settings.openai_api_key_encrypted;
-    if (!encryptedApiKey) {
+    if (!settings.openai_api_key_encrypted) {
         console.warn(`Call OpenAI: OpenAI API Key is missing or null for user ${userId}.`);
         return NextResponse.json({ error: 'OpenAI API Key is missing in Settings.' }, { status: 400 });
     }
 
-    const decryptedApiKey = decryptData(encryptedApiKey, encryptionKey);
+    const decryptedApiKey = decryptData(settings.openai_api_key_encrypted, encryptionKey);
     if (!decryptedApiKey) {
         console.error(`Call OpenAI: Failed to decrypt OpenAI API key for user ${userId}.`);
         return NextResponse.json({ error: 'Could not authenticate with AI service. Check API Key in Settings.' }, { status: 400 });
     }
-    // --- End API Key Fetch/Decrypt ---
 
-
-    // Prepare messages for OpenAI API
-    // (Message preparation logic remains the same)
     const messagesForApi: OpenAI.Chat.ChatCompletionMessageParam[] = (conversationHistory || [])
         .filter(msg => msg.content?.trim())
         .map(msg => ({
-            // Map 'model' role from internal state to 'assistant' for OpenAI
             role: (msg.role === 'model' ? 'assistant' : msg.role) as 'user' | 'assistant' | 'system',
             content: msg.content
         }));
 
-    // Add the current prompt as the last user message if it's not already there
-    // (This logic ensures the latest prompt is included correctly)
      if (messagesForApi.length === 0 || messagesForApi[messagesForApi.length - 1].role !== 'user' || messagesForApi[messagesForApi.length - 1].content !== prompt) {
-         // Check if last message is already the same user prompt to avoid duplicates
-         if(messagesForApi[messagesForApi.length - 1]?.role !== 'user' || messagesForApi[messagesForApi.length - 1]?.content !== prompt) {
+         if(!(messagesForApi[messagesForApi.length - 1]?.role === 'user' && messagesForApi[messagesForApi.length - 1]?.content === prompt)) {
             messagesForApi.push({ role: 'user', content: prompt });
          }
     }
 
-
-    // Call OpenAI API
     const openai = new OpenAI({ apiKey: decryptedApiKey });
     try {
-      console.log(`Calling OpenAI model ${model} for user ${userId} (via slot ${slotNumber}) with history length ${messagesForApi.length}`);
+      console.log(`Calling OpenAI model ${model} for user ${userId} (Slot ${slotNumber}) with history length ${messagesForApi.length}`);
       const completion = await openai.chat.completions.create({
         model: model,
-        messages: messagesForApi, // Pass the prepared message history
+        messages: messagesForApi,
       });
       const responseText = completion.choices[0]?.message?.content;
       if (!responseText) throw new Error('No response text received from OpenAI.');
-      return NextResponse.json({ response: responseText.trim() }, { status: 200 });
+
+      const inputTokens = completion.usage?.prompt_tokens ?? 0;
+      const outputTokens = completion.usage?.completion_tokens ?? 0;
+      
+      // Log token usage
+      const tokenLogResult = await recordTokenUsage(
+        supabase,
+        userId,
+        'OpenAI',
+        model,
+        inputTokens,
+        outputTokens,
+        interactionId,
+        slotNumber
+      );
+      if (!tokenLogResult.success) {
+        console.warn(`Call OpenAI: Token usage logging failed for user ${userId}, model ${model}. Error: ${tokenLogResult.error}`);
+        // Decide if you want to return an error to the client or just log it
+      }
+
+      return NextResponse.json({ 
+        response: responseText.trim(),
+        inputTokens,
+        outputTokens 
+      }, { status: 200 });
+
     } catch (apiError: any) {
         console.error(`Call OpenAI: OpenAI API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);
         let errorMessage = 'Failed to get response from OpenAI.'; let errorStatus = 500;
         if (apiError instanceof OpenAI.APIError) {
             errorMessage = apiError.message || errorMessage;
             errorStatus = apiError.status || errorStatus;
-            // More specific error messages based on status/code
             if (apiError.status === 401) errorMessage = "Invalid OpenAI API Key provided. Please check your key in Settings.";
             else if (apiError.status === 429) errorMessage = "OpenAI rate limit exceeded or quota reached. Please check your usage or try again later.";
             else if (apiError.code === 'model_not_found') { errorMessage = `OpenAI model '${model}' not found or unavailable.`; errorStatus = 400; }
-            else if (apiError.status === 400) { // Broader bad request
+            else if (apiError.status === 400) {
                  errorMessage = `OpenAI request failed (Bad Request): ${apiError.message || 'Check request format/parameters.'}`;
             }
         } else if (apiError.message) { errorMessage = apiError.message; }

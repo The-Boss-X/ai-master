@@ -1,37 +1,52 @@
+// app/api/log-interaction/route.ts
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// app/api/log-interaction/route.ts
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// Ensure dynamic execution
 export const dynamic = 'force-dynamic';
 
-// Structure for a single message (mirrors frontend/type definition)
 interface ConversationMessage {
     role: 'user' | 'model';
     content: string;
 }
 
-// Define the expected structure of the incoming request body
 interface LogInteractionPayload {
-    prompt: string; // The initial prompt
+    prompt: string;
     title?: string | null;
-    summary?: string | null; // ADDED: The generated summary text
+    summary?: string | null;
+
     slot_1_model_used?: string | null;
     slot_1_conversation?: ConversationMessage[] | null;
+    slot_1_input_tokens?: number | null;
+    slot_1_output_tokens?: number | null;
+
     slot_2_model_used?: string | null;
     slot_2_conversation?: ConversationMessage[] | null;
+    slot_2_input_tokens?: number | null;
+    slot_2_output_tokens?: number | null;
+
     slot_3_model_used?: string | null;
     slot_3_conversation?: ConversationMessage[] | null;
+    slot_3_input_tokens?: number | null;
+    slot_3_output_tokens?: number | null;
+
     slot_4_model_used?: string | null;
     slot_4_conversation?: ConversationMessage[] | null;
+    slot_4_input_tokens?: number | null;
+    slot_4_output_tokens?: number | null;
+
     slot_5_model_used?: string | null;
     slot_5_conversation?: ConversationMessage[] | null;
+    slot_5_input_tokens?: number | null;
+    slot_5_output_tokens?: number | null;
+
     slot_6_model_used?: string | null;
     slot_6_conversation?: ConversationMessage[] | null;
+    slot_6_input_tokens?: number | null;
+    slot_6_output_tokens?: number | null;
 }
 
 
@@ -52,16 +67,14 @@ export async function POST(req: NextRequest) {
     let parsedBody: LogInteractionPayload;
 
     try {
-        // 1. Check for active session
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         if (sessionError) throw sessionError;
         if (!session) {
             console.warn("Log Interaction: Unauthorized attempt.");
             return NextResponse.json({ success: false, error: 'Unauthorized: User not logged in.' }, { status: 401 });
         }
-        const userId = session.user.id;
+        const userId = session.user.id; // Get user ID for logging, though RLS should primarily enforce ownership
 
-        // 2. Get data from request body
         try {
             parsedBody = await req.json();
             console.log(`Log Interaction: Received payload for user ${userId}:`, JSON.stringify(parsedBody, null, 2));
@@ -70,81 +83,65 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ success: false, error: 'Invalid JSON payload received.' }, { status: 400 });
         }
 
-
-        // 3. Extract data received from the frontend
-        const {
-            prompt,
-            title,
-            summary, // ADDED: Extract summary
-            // Extract all potential slots
-            slot_1_model_used, slot_1_conversation,
-            slot_2_model_used, slot_2_conversation,
-            slot_3_model_used, slot_3_conversation,
-            slot_4_model_used, slot_4_conversation,
-            slot_5_model_used, slot_5_conversation,
-            slot_6_model_used, slot_6_conversation,
-        } = parsedBody;
+        const { prompt, title, summary } = parsedBody;
 
         if (!prompt) {
             console.warn("Log Interaction: Prompt is missing.");
             return NextResponse.json({ success: false, error: 'Prompt is required for logging.' }, { status: 400 });
         }
 
-        // 4. Prepare data object for inserting, including summary
         const interactionDataForSupabase: Record<string, any> = {
-            // user_id: userId, // Handled by RLS/default
+            user_id: userId, // Explicitly set user_id for the record
             prompt: prompt,
             title: title || prompt.substring(0, 50) + (prompt.length > 50 ? '...' : ''),
-            summary: summary || null, // ADDED: Include summary in data to save
+            summary: summary || null,
         };
 
-        // Add data for slots 1 through 6
         for (let i = 1; i <= 6; i++) {
             const modelKey = `slot_${i}_model_used` as keyof LogInteractionPayload;
             const convKey = `slot_${i}_conversation` as keyof LogInteractionPayload;
+            const inputTokensKey = `slot_${i}_input_tokens` as keyof LogInteractionPayload;
+            const outputTokensKey = `slot_${i}_output_tokens` as keyof LogInteractionPayload;
+
             interactionDataForSupabase[modelKey] = parsedBody[modelKey] || null;
             interactionDataForSupabase[convKey] = parsedBody[convKey] || null;
+            interactionDataForSupabase[inputTokensKey] = parsedBody[inputTokensKey] || null; // Default to null if not provided
+            interactionDataForSupabase[outputTokensKey] = parsedBody[outputTokensKey] || null; // Default to null if not provided
         }
-
+        
         console.log(`Log Interaction: Data prepared for 'interactions' insert for user ${userId}:`, JSON.stringify(interactionDataForSupabase, null, 2));
 
-
-        // 5. Insert data ONLY into the 'interactions' table
-        // Ensure RLS allows insert and user_id matches auth.uid()
-        // Select back all fields including the new summary field
         const selectQuery = `
             id, created_at, prompt, title, user_id, summary,
-            slot_1_model_used, slot_1_conversation,
-            slot_2_model_used, slot_2_conversation,
-            slot_3_model_used, slot_3_conversation,
-            slot_4_model_used, slot_4_conversation,
-            slot_5_model_used, slot_5_conversation,
-            slot_6_model_used, slot_6_conversation
-        `; // ADDED: summary to select query
+            slot_1_model_used, slot_1_conversation, slot_1_input_tokens, slot_1_output_tokens,
+            slot_2_model_used, slot_2_conversation, slot_2_input_tokens, slot_2_output_tokens,
+            slot_3_model_used, slot_3_conversation, slot_3_input_tokens, slot_3_output_tokens,
+            slot_4_model_used, slot_4_conversation, slot_4_input_tokens, slot_4_output_tokens,
+            slot_5_model_used, slot_5_conversation, slot_5_input_tokens, slot_5_output_tokens,
+            slot_6_model_used, slot_6_conversation, slot_6_input_tokens, slot_6_output_tokens
+        `;
         const { data, error: insertError } = await supabase
-            .from('interactions') // Target the interactions table
-            .insert([interactionDataForSupabase]) // Insert the prepared interaction data
-            .select(selectQuery) // Select the newly inserted row(s) to return to client
-            .single(); // Expecting a single row back
+            .from('interactions')
+            .insert([interactionDataForSupabase])
+            .select(selectQuery)
+            .single();
 
         if (insertError) {
             console.error(`Log Interaction: Supabase insert error into 'interactions' for user ${userId}:`, insertError);
-            // Check for missing column error specifically
             if (insertError.message.includes('column') && insertError.message.includes('does not exist')) {
-                 console.error("!!! DB Schema Mismatch: Column likely missing in 'interactions'. Ensure 'summary' column exists. !!!");
-                 return NextResponse.json({ success: false, error: `Database schema error: ${insertError.message}. Ensure 'summary' column exists.` }, { status: 500 });
+                 console.error("!!! DB Schema Mismatch: Column likely missing in 'interactions'. Check token columns. !!!");
+                 return NextResponse.json({ success: false, error: `Database schema error: ${insertError.message}. Check token columns.` }, { status: 500 });
             }
             if (insertError.message.includes('invalid input syntax for type json')) {
-                console.error("!!! Data being sent for a _conversation column is not valid JSON !!!");
+                console.error("!!! Data being sent for a _conversation column is not valid JSON array !!!");
                 return NextResponse.json({ success: false, error: `Invalid data format for conversation history.` }, { status: 400 });
             }
-            if (insertError.code === '42501') { // RLS permission denied
+            if (insertError.code === '42501') {
                 return NextResponse.json({ success: false, error: 'Permission denied to log interaction.' }, { status: 403 });
             }
             return NextResponse.json({ success: false, error: `Failed to log interaction to database: ${insertError.message}` }, { status: 500 });
         }
 
-        // 6. Return success response
         console.log(`Log Interaction: Supabase log successful for user ${userId}, returned data ID:`, data?.id);
         return NextResponse.json({ success: true, loggedData: [data] }, { status: 201 });
 

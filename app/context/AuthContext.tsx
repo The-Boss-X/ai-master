@@ -1,5 +1,7 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable react-hooks/exhaustive-deps */
 // app/context/AuthContext.tsx
-'use client'; // Essential for hooks like useState, useEffect, useContext
+'use client';
 
 import React, {
   createContext,
@@ -7,146 +9,164 @@ import React, {
   useState,
   useEffect,
   ReactNode,
-  useCallback, // Keep useCallback for signOut stability
+  useCallback,
 } from 'react';
-import { User, Session } from '@supabase/supabase-js';
-// Assuming your configured client-side Supabase client is here:
-// IMPORTANT: Ensure this client uses createBrowserClient from @supabase/ssr
-// or createClient from @supabase/supabase-js if not using SSR features needing cookies.
-// Make sure this path is correct for your project structure
-import supabaseClient from '../../lib/supabaseClient';
+import { User as SupabaseUser, Session } from '@supabase/supabase-js';
+import supabaseClient from '../../lib/supabaseClient'; // Your client-side Supabase client
+import { Database } from '@/lib/database.types'; // Assuming this is generated
 
-// 1. Define the Interface for the Context Value
-interface AuthContextType {
-  user: User | null; // The authenticated Supabase user object, or null
-  session: Session | null; // The active Supabase session object, or null
-  isLoading: boolean; // Tracks initial auth state loading (true until first check completes)
-  signOut: () => Promise<void>; // Function to sign out the user
+// Define the UserSettings interface based on your database.types.ts and get-settings response
+// This should match the structure of the user_settings table row.
+export interface UserSettings {
+  user_id?: string; // This is usually the PK and implicitly known
+  slot_1_model: string | null;
+  slot_2_model: string | null;
+  slot_3_model: string | null;
+  slot_4_model: string | null;
+  slot_5_model: string | null;
+  slot_6_model: string | null;
+  summary_model: string | null;
+  openai_api_key_encrypted: string | null;
+  anthropic_api_key_encrypted: string | null;
+  gemini_api_key_encrypted: string | null;
+  use_provided_keys: boolean;
+  free_tokens_remaining: number;
+  free_tokens_last_reset_at: string | null;
+  paid_tokens_remaining: number;
+  total_tokens_used_overall: number;
+  updated_at: string | null;
 }
 
-// 2. Create the Context
-// Initialize with undefined to help catch usage outside the provider during development
+interface AuthContextType {
+  user: SupabaseUser | null;
+  session: Session | null;
+  isLoading: boolean;
+  userSettings: UserSettings | null; // Holds all user-specific settings
+  fetchUserSettings: () => Promise<void>; // Function to manually refresh settings
+  signOut: () => Promise<void>;
+}
+
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// 3. Create the Custom Hook for Consuming the Context
-/**
- * Hook to easily access authentication state (user, session, loading) and actions (signOut).
- * Throws an error if used outside of an AuthProvider.
- * @returns {AuthContextType} The authentication context value.
- */
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    // This error helps ensure the hook is used correctly within the component tree
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
 };
 
-// 4. Create the Provider Component
 interface AuthProviderProps {
-  children: ReactNode; // To wrap around other components that need auth context
+  children: ReactNode;
 }
 
-/**
- * AuthProvider component manages and provides authentication state (user, session, loading)
- * and the signOut function to its children components via the AuthContext.
- * It fetches the initial session state and listens for real-time auth changes from Supabase.
- */
+const defaultSettingsValues: UserSettings = {
+    slot_1_model: null, slot_2_model: null, slot_3_model: null, slot_4_model: null, slot_5_model: null, slot_6_model: null,
+    summary_model: null,
+    openai_api_key_encrypted: null, anthropic_api_key_encrypted: null, gemini_api_key_encrypted: null,
+    use_provided_keys: false,
+    free_tokens_remaining: 10000,
+    free_tokens_last_reset_at: null,
+    paid_tokens_remaining: 0,
+    total_tokens_used_overall: 0,
+    updated_at: null,
+};
+
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
-  // State variables managed by the provider
   const [session, setSession] = useState<Session | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true); // Start loading until initial check
+  const [user, setUser] = useState<SupabaseUser | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
 
-  // Effect to fetch initial session and set up the auth state change listener
-  useEffect(() => {
-    // Flag to prevent state updates if the component unmounts quickly
-    let isMounted = true;
-
-    // Async function to check the initial session state on component mount
-    const fetchInitialSession = async () => {
+  const fetchUserSettingsCallback = useCallback(async (currentSession: Session | null) => {
+    if (currentSession?.user?.id) {
       try {
-        // Use the client-side Supabase client instance to get the current session
-        const { data: { session: initialSession }, error } = await supabaseClient.auth.getSession();
-
-        if (error) {
-          console.error("AuthContext: Error fetching initial session:", error.message);
+        const response = await fetch('/api/settings/get-settings');
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          // Handle 404 or PGRST116 (no settings found for user) by using defaults
+          if (response.status === 404 || errorData.details?.includes('PGRST116') || errorData.error?.includes('No settings found')) {
+            console.log('No settings found for user via API, applying defaults to context.');
+            setUserSettings(defaultSettingsValues);
+            return;
+          }
+          throw new Error(errorData.error || `Failed to fetch user settings: ${response.statusText}`);
         }
-
-        // Only update state if the component is still mounted
-        if (isMounted) {
-          setSession(initialSession);
-          console.log("AuthContext: Initial session check complete.", initialSession ? `User: ${initialSession.user.id}` : "No initial session.");
-        }
-
-      } catch (err) {
-        console.error("AuthContext: Unexpected error during initial session fetch:", err);
-        if (isMounted) {
-          setSession(null); // Ensure session is null on unexpected error
-        }
-      } finally {
-        // Mark loading as false once the initial check attempt is complete, if mounted
-        if (isMounted) {
-          setIsLoading(false);
-        }
+        const data: UserSettings = await response.json();
+        setUserSettings(data);
+        console.log("AuthContext: User settings fetched/updated.", data);
+      } catch (error) {
+        console.error("AuthContext: Error fetching user settings:", error);
+        setUserSettings(defaultSettingsValues); // Fallback to defaults on any error
       }
-    };
+    } else {
+      setUserSettings(null); // No user, no settings
+    }
+  }, []);
 
-    // Run the initial session check
-    fetchInitialSession();
 
-    // Subscribe to Supabase auth state changes (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.)
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+
+    supabaseClient.auth.getSession().then(async ({ data: { session: initialSession } }) => {
+      if (isMounted) {
+        setSession(initialSession);
+        setUser(initialSession?.user ?? null);
+        await fetchUserSettingsCallback(initialSession);
+        setIsLoading(false);
+        console.log("AuthContext: Initial session and settings check complete.", initialSession ? `User: ${initialSession.user.id}` : "No initial session.");
+      }
+    }).catch(error => {
+        console.error("AuthContext: Error in initial getSession:", error);
+        if(isMounted) setIsLoading(false);
+    });
+
     const { data: authListener } = supabaseClient.auth.onAuthStateChange(
-      (_event, newSession) => {
-        // This listener callback runs whenever the auth state changes
+      async (_event, newSession) => {
         if (isMounted) {
           console.log(`AuthContext: Auth state changed (Event: ${_event})`, newSession ? `New User: ${newSession.user.id}` : "User signed out");
-          // Update the session state with the new session (or null if signed out)
           setSession(newSession);
-          // Ensure loading is false after any auth event occurs
-          setIsLoading(false);
+          setUser(newSession?.user ?? null);
+          await fetchUserSettingsCallback(newSession); // Fetch/clear settings on auth change
+          // Ensure loading is false after any auth event occurs that might change user state
+          if (isLoading && (_event === 'SIGNED_IN' || _event === 'SIGNED_OUT' || _event === 'USER_UPDATED')) {
+             setIsLoading(false);
+          }
         }
       }
     );
 
-    // Cleanup function: This runs when the component unmounts
     return () => {
-      isMounted = false; // Set flag to prevent state updates after unmount
-      // Unsubscribe the listener to prevent memory leaks
+      isMounted = false;
       if (authListener?.subscription) {
         authListener.subscription.unsubscribe();
         console.log("AuthContext: Unsubscribed from auth state changes.");
       }
     };
-  }, []); // Empty dependency array ensures this effect runs only once on mount
+  }, [fetchUserSettingsCallback]); // Added fetchUserSettingsCallback to dependency array
 
-  // Sign out function, wrapped in useCallback for performance optimization
-  // Prevents unnecessary re-creation if passed down as a prop
   const handleSignOut = useCallback(async () => {
     try {
-      // Call Supabase's signOut method
       const { error } = await supabaseClient.auth.signOut();
       if (error) {
         console.error("AuthContext: Error signing out:", error.message);
       }
-      // No need to manually set session to null here;
-      // the onAuthStateChange listener will detect the SIGNED_OUT event and update the state.
+      // Session and userSettings will be updated by onAuthStateChange listener
     } catch (err) {
       console.error("AuthContext: Unexpected error during sign out:", err);
     }
-  }, []); // No dependencies, so this function is stable
+  }, []);
 
-  // Prepare the value object to be provided by the context
-  // Derive the 'user' directly from the 'session' state for convenience
   const contextValue: AuthContextType = {
-    user: session?.user ?? null, // Provide the user object or null if no session
-    session,                     // Provide the full session object or null
-    isLoading,                   // Provide the loading status
-    signOut: handleSignOut,      // Provide the signOut function
+    user,
+    session,
+    isLoading,
+    userSettings,
+    fetchUserSettings: () => fetchUserSettingsCallback(session), // Expose manual refresh
+    signOut: handleSignOut,
   };
 
-  // Render the AuthContext.Provider, passing the context value
-  // Wrap the children components, making the context available to them
   return (
     <AuthContext.Provider value={contextValue}>
       {children}

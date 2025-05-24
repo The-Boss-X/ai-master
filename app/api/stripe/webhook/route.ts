@@ -65,14 +65,14 @@ export async function POST(req: NextRequest) {
       try {
         // Fetch the user's current paid_tokens_remaining
         const { data: userData, error: fetchError } = await supabaseAdmin
-          .from('users') // Ensure 'users' is your correct table name
+          .from('user_settings') // Changed from 'users' to 'user_settings'
           .select('paid_tokens_remaining')
-          .eq('id', userId)
+          .eq('user_id', userId) // Changed from 'id' to 'user_id'
           .single();
 
         if (fetchError) {
-          console.error(`Webhook Supabase Error: Could not fetch user ${userId} for token update:`, fetchError);
-          return NextResponse.json({ error: 'Supabase fetch error' }, { status: 500 });
+          console.error(`Webhook Supabase Error: Could not fetch user ${userId} from user_settings for token update:`, fetchError);
+          return NextResponse.json({ error: 'Supabase fetch error from user_settings' }, { status: 500 });
         }
 
         const currentTokens = userData?.paid_tokens_remaining || 0;
@@ -80,13 +80,13 @@ export async function POST(req: NextRequest) {
 
         // Update the user's token count
         const { error: updateError } = await supabaseAdmin
-          .from('users')
+          .from('user_settings') // Changed from 'users' to 'user_settings'
           .update({ paid_tokens_remaining: newTotalTokens })
-          .eq('id', userId);
+          .eq('user_id', userId); // Changed from 'id' to 'user_id'
 
         if (updateError) {
-          console.error(`Webhook Supabase Error: Could not update tokens for user ${userId}:`, updateError);
-          return NextResponse.json({ error: 'Supabase update error' }, { status: 500 });
+          console.error(`Webhook Supabase Error: Could not update tokens for user ${userId} in user_settings:`, updateError);
+          return NextResponse.json({ error: 'Supabase update error in user_settings' }, { status: 500 });
         }
 
         console.log(`Successfully added ${tokensToAdd} tokens to user ${userId}. New total: ${newTotalTokens}`);

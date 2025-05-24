@@ -25,11 +25,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const [streamingSettingError, setStreamingSettingError] = useState<string | null>(null);
   const [streamingSettingSuccess, setStreamingSettingSuccess] = useState<string | null>(null);
 
+  const [enableSearch, setEnableSearch] = useState<boolean>(false);
+  const [isLoadingSearchSetting, setIsLoadingSearchSetting] = useState<boolean>(false);
+  const [searchSettingError, setSearchSettingError] = useState<string | null>(null);
+  const [searchSettingSuccess, setSearchSettingSuccess] = useState<string | null>(null);
+
   useEffect(() => {
     if (isOpen && activeTab === 'General') {
       setIsLoadingStreamingSetting(true);
       setStreamingSettingError(null);
       setStreamingSettingSuccess(null);
+      setIsLoadingSearchSetting(true);
+      setSearchSettingError(null);
+      setSearchSettingSuccess(null);
       fetch('/api/settings/get-settings')
         .then(res => {
           if (!res.ok) {
@@ -39,12 +47,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
         })
         .then(data => {
           setEnableStreaming(data?.enable_streaming || false);
+          setEnableSearch(data?.enable_search || false);
         })
         .catch(err => {
           console.error("Error fetching streaming setting:", err);
           setStreamingSettingError(err.message || 'Could not load streaming preference.');
+          setSearchSettingError(err.message || 'Could not load search preference.');
         })
-        .finally(() => setIsLoadingStreamingSetting(false));
+        .finally(() => {
+          setIsLoadingStreamingSetting(false);
+          setIsLoadingSearchSetting(false);
+        });
     }
   }, [isOpen, activeTab]);
 
@@ -64,19 +77,43 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
         throw new Error(errData.error || 'Failed to update streaming preference.');
       }
       setStreamingSettingSuccess('Streaming preference updated!');
-      // Optionally, you might want to inform the parent page about the change if it affects behavior immediately.
-      // onClose(); // Or keep it open
     } catch (err: any) {
       console.error("Error updating streaming setting:", err);
       setStreamingSettingError(err.message || 'Could not save streaming preference.');
-      // Revert UI optimistically updated if needed, or let user retry
-      // setEnableStreaming(!newStreamingValue); 
     } finally {
       setIsLoadingStreamingSetting(false);
       setTimeout(() => {
         setStreamingSettingSuccess(null);
         setStreamingSettingError(null);
-      }, 3000); // Clear messages after 3 seconds
+      }, 3000);
+    }
+  };
+
+  const handleSearchToggle = async (newSearchValue: boolean) => {
+    setEnableSearch(newSearchValue);
+    setIsLoadingSearchSetting(true);
+    setSearchSettingError(null);
+    setSearchSettingSuccess(null);
+    try {
+      const response = await fetch('/api/settings/update-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable_search: newSearchValue }),
+      });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to update search preference.');
+      }
+      setSearchSettingSuccess('Search preference updated!');
+    } catch (err: any) {
+      console.error("Error updating search setting:", err);
+      setSearchSettingError(err.message || 'Could not save search preference.');
+    } finally {
+      setIsLoadingSearchSetting(false);
+      setTimeout(() => {
+        setSearchSettingSuccess(null);
+        setSearchSettingError(null);
+      }, 3000);
     }
   };
 
@@ -166,6 +203,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
                   {isLoadingStreamingSetting && <p className="text-xs text-sky-600 dark:text-sky-400 mt-2">Processing...</p>}
                   {streamingSettingError && <p className="text-xs text-red-600 dark:text-red-400 mt-2">Error: {streamingSettingError}</p>}
                   {streamingSettingSuccess && <p className="text-xs text-green-600 dark:text-green-400 mt-2">{streamingSettingSuccess}</p>}
+                </div>
+
+                {/* Search Setting Section */}
+                <div className="mb-6 p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800/50 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label htmlFor="search-toggle" className="font-medium text-slate-700 dark:text-slate-300">
+                        Enable Web Search (Anthropic Only - Beta)
+                      </label>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md">
+                        Allow Anthropic models to search the web for more up-to-date information. This may incur additional costs and is experimental.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      id="search-toggle"
+                      onClick={() => handleSearchToggle(!enableSearch)}
+                      disabled={isLoadingSearchSetting}
+                      className={`${enableSearch ? 'bg-sky-600' : 'bg-slate-300 dark:bg-slate-600'} relative inline-flex items-center h-6 rounded-full w-11 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800 disabled:opacity-50`}
+                      role="switch"
+                      aria-checked={enableSearch}
+                    >
+                      <span className="sr-only">Enable Search</span>
+                      <span
+                        className={`${enableSearch ? 'translate-x-6' : 'translate-x-1'} inline-block w-4 h-4 transform bg-white rounded-full transition-transform`}
+                      />
+                    </button>
+                  </div>
+                  {isLoadingSearchSetting && <p className="text-xs text-sky-600 dark:text-sky-400 mt-2">Processing...</p>}
+                  {searchSettingError && <p className="text-xs text-red-600 dark:text-red-400 mt-2">Error: {searchSettingError}</p>}
+                  {searchSettingSuccess && <p className="text-xs text-green-600 dark:text-green-400 mt-2">{searchSettingSuccess}</p>}
                 </div>
 
                 {/* Placeholder for other general settings */}

@@ -27,6 +27,7 @@ interface FetchedSettings {
     slot_6_model: string | null;
     summary_model: string | null;
     enable_streaming?: boolean | null; // Added for streaming
+    enable_search?: boolean | null; // Added for search
 }
 
 interface AiSlotState {
@@ -79,6 +80,7 @@ const MainAppInterface = () => {
     const isProcessingSummaryAndLog = useRef(false);
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
     const [userStreamingPreference, setUserStreamingPreference] = useState<boolean>(false); // Added for streaming
+    const [userSearchPreference, setUserSearchPreference] = useState<boolean>(false); // Added for search
 
     const handleSettingsPossiblyChanged = () => {
         console.log("Settings modal closed, re-fetching settings for new chat if no history selected.");
@@ -125,6 +127,7 @@ const MainAppInterface = () => {
             const newSlotStates: AiSlotState[] = [];
             let fetchedSummaryModel: string | null = null;
             let fetchedStreamingPref = false; // Added for streaming
+            let fetchedSearchPref = false; // Added for search
             if (data) {
                 for (let i = 0; i < MAX_SLOTS; i++) {
                     const modelKey = `slot_${i + 1}_model` as keyof FetchedSettings;
@@ -138,15 +141,18 @@ const MainAppInterface = () => {
                     fetchedSummaryModel = data.summary_model;
                 } else if (data.summary_model) { console.warn(`Invalid format for summary model in settings: "${data.summary_model}".`); }
                 fetchedStreamingPref = data.enable_streaming || false; // Added for streaming
+                fetchedSearchPref = data.enable_search || false; // Added for search
             }
             setSlotStates(newSlotStates);
             setSummaryModelState(fetchedSummaryModel);
             setUserStreamingPreference(fetchedStreamingPref); // Added for streaming
-            console.log(`Applied settings for new chat. Active slots: ${newSlotStates.length}, Summary Model: ${fetchedSummaryModel || 'None'}, Streaming: ${fetchedStreamingPref}`);
+            setUserSearchPreference(fetchedSearchPref); // Added for search
+            console.log(`Applied settings for new chat. Active slots: ${newSlotStates.length}, Summary Model: ${fetchedSummaryModel || 'None'}, Streaming: ${fetchedStreamingPref}, Search: ${fetchedSearchPref}`);
         } catch (e: any) {
             console.error("Error fetching settings for new chat:", e);
             setSettingsError(e.message); setSlotStates([]); setSummaryModelState(null);
             setUserStreamingPreference(false); // Added for streaming
+            setUserSearchPreference(false); // Added for search
         } finally {
             setSettingsLoading(false);
         }
@@ -201,6 +207,7 @@ const MainAppInterface = () => {
             setSettingsError(null); setHistoryError(null); setMainInputText('');
             setSummaryModelState(null); setSummaryText(null); setSummaryLoading(false); setSummaryError(null);
             setUserStreamingPreference(false); // Reset streaming preference
+            setUserSearchPreference(false); // Reset search preference
             isProcessingSummaryAndLog.current = false;
         }
     }, [user, isAuthLoading, fetchHistory, fetchSettingsForNewChat, selectedHistoryId, uiLocked, currentChatPrompt]);
@@ -649,6 +656,9 @@ const MainAppInterface = () => {
                 if (interactionIdForLog !== null && interactionIdForLog !== undefined) {
                     paramsForEventSource.interactionId = interactionIdForLog;
                 }
+                if (provider === 'Anthropic' && userSearchPreference) { // Only for Anthropic
+                    paramsForEventSource.useSearch = String(true);
+                }
 
                 const eventSource = new EventSource(`${apiUrl}?${new URLSearchParams(paramsForEventSource)}`);
                 let currentResponseText = "";
@@ -773,7 +783,7 @@ const MainAppInterface = () => {
 
             } else {
                 // NON-STREAMING LOGIC
-                const requestBody = { // Define requestBody here, within the non-streaming block
+                const requestBody: Record<string, any> = { // Define requestBody here, within the non-streaming block
                     prompt: lastUserMessageContent,
                     model: specificModel,
                     slotNumber,
@@ -781,6 +791,9 @@ const MainAppInterface = () => {
                     interactionId: interactionIdForLog,
                     stream: false 
                 };
+                if (provider === 'Anthropic' && userSearchPreference) { // Only for Anthropic
+                    requestBody.useSearch = true;
+                }
                 const apiResponse = await fetch(apiUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -847,7 +860,7 @@ const MainAppInterface = () => {
                 outputTokensThisTurn: 0,
             }));
         }
-    }, [userStreamingPreference]); 
+    }, [userStreamingPreference, userSearchPreference]); 
 
     const handleProcessText = useCallback(async () => {
         const currentInput = mainInputText.trim();
@@ -922,7 +935,7 @@ const MainAppInterface = () => {
             console.log("All main API call initiations complete via handleProcessText.");
             setUiLocked(false);
         });
-    }, [mainInputText, user, isAuthLoading, settingsLoading, selectedHistoryId, slotStates, callApiForSlot, uiLocked, summaryLoading, summaryModelState, initialSlotState, userStreamingPreference]);
+    }, [mainInputText, user, isAuthLoading, settingsLoading, selectedHistoryId, slotStates, callApiForSlot, uiLocked, summaryLoading, summaryModelState, initialSlotState, userStreamingPreference, userSearchPreference]);
 
     const handleReplyToSlot = useCallback((slotIndex: number) => {
         const currentStateSnapshot = [...slotStates]; 
@@ -973,7 +986,7 @@ const MainAppInterface = () => {
             setUiLocked(false);
         });
 
-    }, [user, slotStates, callApiForSlot, selectedHistoryId, uiLocked, summaryLoading, userStreamingPreference]);
+    }, [user, slotStates, callApiForSlot, selectedHistoryId, uiLocked, summaryLoading, userStreamingPreference, userSearchPreference]);
 
     const isProcessingAnySlot = slotStates.some(slot => slot.loading);
     const isProcessingSummary = summaryLoading;

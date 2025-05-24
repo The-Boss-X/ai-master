@@ -43,7 +43,8 @@ export async function GET() {
       paid_tokens_remaining,
       free_tokens_last_reset_at,
       total_tokens_used_overall,
-      enable_streaming
+      enable_streaming,
+      enable_search
     `;
 
     const { data: settings, error: fetchError } = await supabase

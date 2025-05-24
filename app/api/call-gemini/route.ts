@@ -69,6 +69,10 @@ export async function GET(request: NextRequest) {
 }
 
 async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) {
+  let slotNumberInitial: CallGeminiRequest['slotNumber'] | string = "N/A";
+  let model: string | undefined = undefined;
+  let userId: string | undefined = undefined;
+
   const cookieStore = await cookies();
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -91,7 +95,7 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
   try {
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
     if (sessionError || !session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const userId = session.user.id;
+    userId = session.user.id;
 
     let payload: CallGeminiRequest;
     let actualStreamFlag = false;
@@ -120,11 +124,17 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
         }
     }
     
-    const { prompt, model, slotNumber, conversationHistory, interactionId } = payload;
+    const { prompt, conversationHistory, interactionId } = payload;
+    model = payload.model;
+    slotNumberInitial = payload.slotNumber;
 
-    if (!prompt || !model || !slotNumber) {
-      return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
+    if (!prompt || !model || !slotNumberInitial) {
+      console.error(`[Gemini API - Slot ${slotNumberInitial}] Missing critical payload fields: prompt, model, or slotNumberInitial.`);
+      return NextResponse.json({ error: 'Missing required fields in payload (prompt, model, or slotNumberInitial).' }, { status: 400 });
     }
+    
+    const currentModel = model;
+    const currentSlotNumber = slotNumberInitial as CallGeminiRequest['slotNumber'];
 
     const { data: userSettings, error: fetchError } = await supabase
       .from('user_settings')
@@ -175,42 +185,90 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
     const fullConversationForStream: Content[] = [...historyForStartChat, currentPromptContent];
 
     try {
+      console.log(`[Gemini API - Slot ${currentSlotNumber}] Initializing GoogleGenerativeAI with key type: ${keyType}`);
       const genAI = new GoogleGenerativeAI(apiKeyToUse);
-      const generativeModel = genAI.getGenerativeModel({ model: model });
+      const generativeModel = genAI.getGenerativeModel({ model: currentModel });
+      const generationConfig: any = {};
+
+      const requestOptionsForLog = {
+        contents: actualStreamFlag ? fullConversationForStream : historyForStartChat, // historyForStartChat for non-stream, full for stream
+        ...(Object.keys(generationConfig).length > 0 && { generationConfig }),
+        ...( !actualStreamFlag && { prompt: prompt }) // Add prompt for non-streaming startChat.sendMessage
+      };
+      console.log(`[Gemini API - Slot ${currentSlotNumber}] Request options for ${actualStreamFlag ? 'generateContentStream' : 'startChat/sendMessage'}:`, JSON.stringify(requestOptionsForLog, null, 2));
 
       if (actualStreamFlag) {
-        const streamResult = await generativeModel.generateContentStream({ contents: fullConversationForStream });
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Attempting to call generateContentStream.`);
+        const streamResult = await generativeModel.generateContentStream(
+          { contents: fullConversationForStream,
+            ...(Object.keys(generationConfig).length > 0 && { generationConfig }) 
+          }
+        );
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] generateContentStream call completed. Preparing ReadableStream.`);
         
         const encoder = new TextEncoder();
         const readableStream = new ReadableStream({
           async start(controller) {
+            console.log(`[Gemini API - Slot ${currentSlotNumber}] ReadableStream started. Beginning to iterate streamResult.stream.`);
             try {
               let accumulatedResponseText = "";
               let inputTokens = 0;
               let outputTokens = 0;
+              let chunkCount = 0;
 
               for await (const chunk of streamResult.stream) {
+                chunkCount++;
                 const chunkText = chunk.text();
+                console.log(`[Gemini API - Slot ${currentSlotNumber}] Stream chunk ${chunkCount} received. Text length: ${chunkText?.length || 0}. Has usageMetadata: ${!!chunk.usageMetadata}`);
                 if (chunkText) {
                   accumulatedResponseText += chunkText;
-                  outputTokens += chunk.usageMetadata?.candidatesTokenCount || (chunkText.length / 4);
+                  // Use candidatesTokenCount if available, otherwise estimate. It might be 0 for delta chunks.
+                  const chunkOutputTokens = chunk.usageMetadata?.candidatesTokenCount || 0;
+                  outputTokens += chunkOutputTokens; 
+                  // console.log(`[Gemini API - Slot ${currentSlotNumber}] Chunk ${chunkCount} output tokens: ${chunkOutputTokens}, Total output tokens so far: ${outputTokens}`);
                   controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", token: chunkText })}\n\n`));
                 }
                 if (chunk.usageMetadata?.promptTokenCount && !inputTokens) {
                     inputTokens = chunk.usageMetadata.promptTokenCount;
+                    console.log(`[Gemini API - Slot ${currentSlotNumber}] Prompt tokens from chunk ${chunkCount}: ${inputTokens}`);
                 }
               }
               
-              const finalUsageMetadata = (await streamResult.response)?.usageMetadata;
-              inputTokens = finalUsageMetadata?.promptTokenCount || inputTokens || 0;
-              outputTokens = finalUsageMetadata?.candidatesTokenCount || outputTokens || 0;
-              const tokensUsed = inputTokens + outputTokens;
+              console.log(`[Gemini API - Slot ${currentSlotNumber}] Finished iterating over stream chunks. Total chunks: ${chunkCount}. Accumulated text length: ${accumulatedResponseText.length}`);
+
+              let finalInputTokens = inputTokens;
+              let finalOutputTokens = outputTokens;
+
+              try {
+                console.log(`[Gemini API - Slot ${currentSlotNumber}] Attempting to await streamResult.response for final metadata.`);
+                const finalResponse = await streamResult.response;
+                console.log(`[Gemini API - Slot ${currentSlotNumber}] Successfully awaited streamResult.response.`);
+                if (finalResponse) {
+                    console.log(`[Gemini API - Slot ${currentSlotNumber}] finalResponse content:`, JSON.stringify(finalResponse, null, 2));
+                    const finalUsageMetadata = finalResponse.usageMetadata;
+                    if (finalUsageMetadata) {
+                        finalInputTokens = finalUsageMetadata.promptTokenCount ?? inputTokens;
+                        finalOutputTokens = finalUsageMetadata.candidatesTokenCount ?? outputTokens;
+                        console.log(`[Gemini API - Slot ${currentSlotNumber}] Final tokens from metadata: In: ${finalInputTokens}, Out: ${finalOutputTokens}. Finish Reason: ${finalResponse.candidates?.[0]?.finishReason}`);
+                    } else {
+                        console.warn(`[Gemini API - Slot ${currentSlotNumber}] No final usageMetadata found in streamResult.response. Using accumulated estimates. Finish Reason from finalResponse (if any): ${finalResponse.candidates?.[0]?.finishReason}`);
+                    }
+                } else {
+                     console.warn(`[Gemini API - Slot ${currentSlotNumber}] streamResult.response was null or undefined.`);
+                }
+              } catch (responseError: any) {
+                console.error(`[Gemini API - Slot ${currentSlotNumber}] Error awaiting or processing streamResult.response:`, responseError.message, responseError.stack);
+                // Keep using accumulated tokens if this fails
+              }
+              
+              const tokensUsed = finalInputTokens + finalOutputTokens;
+              console.log(`[Gemini API - Slot ${currentSlotNumber}] Total tokens for this stream: Input: ${finalInputTokens}, Output: ${finalOutputTokens}, Combined: ${tokensUsed}`);
 
               let tokensToDeduct = tokensUsed;
               if (keyType === 'provided' && tokensUsed > 0) {
                 tokensToDeduct = tokensUsed * 4;
                 const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
-                  user_id_param: userId,
+                  user_id_param: userId!,
                   tokens_to_deduct: tokensToDeduct,
                 });
                 if (rpcError) console.error(`Call Gemini (Stream): Failed to decrement tokens for user ${userId}:`, rpcError);
@@ -221,31 +279,49 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
               }
               
               // Call recordTokenUsage with 9 arguments
-              await recordTokenUsage(supabase, userId, 'Gemini', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
+              await recordTokenUsage(supabase, userId!, 'Gemini', currentModel, finalInputTokens, finalOutputTokens, interactionId, currentSlotNumber, keyType);
 
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "tokens", inputTokens, outputTokens })}\n\n`));
+              console.log(`[Gemini API - Slot ${currentSlotNumber}] Enqueuing final tokens event.`);
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "tokens", inputTokens: finalInputTokens, outputTokens: finalOutputTokens })}\n\n`));
+              console.log(`[Gemini API - Slot ${currentSlotNumber}] Enqueuing stream end event.`);
               controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended" })}\n\n`));
             } catch (e: any) {
-              console.error("Streaming error in Gemini:", e);
+              console.error(`[Gemini API - Slot ${currentSlotNumber}] Error during stream processing in ReadableStream:`, e.message, e.stack);
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: e.message || 'Streaming failed within Gemini route' })}\n\n`));
+              console.log(`[Gemini API - Slot ${currentSlotNumber}] Enqueuing stream end event after error.`);
               controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended due to error" })}\n\n`));
             } finally {
+              console.log(`[Gemini API - Slot ${currentSlotNumber}] Closing controller in ReadableStream.`);
               controller.close();
             }
           }
         });
         
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Returning new Response with ReadableStream.`);
         return new Response(readableStream, {
           headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
         });
 
       } else {
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Full conversation history for non-streaming chat:`, JSON.stringify(historyForStartChat, null, 2));
         const chat = generativeModel.startChat({ history: historyForStartChat });
-        const result = await chat.sendMessage(prompt);
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Attempting to call chat.sendMessage. Prompt: "${prompt}".`);
+        
+        const messageOptions: any = {};
+        if (Object.keys(generationConfig).length > 0) {
+            messageOptions.generationConfig = generationConfig;
+        }
+
+        const result = Object.keys(messageOptions).length > 0 
+            ? await chat.sendMessage(prompt, messageOptions)
+            : await chat.sendMessage(prompt);
+
         const response = result.response;
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Non-streaming sendMessage call completed. Full response:`, JSON.stringify(response, null, 2));
 
         const promptFeedback = response.promptFeedback;
         const finishReason = response.candidates?.[0]?.finishReason;
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Non-streaming - PromptFeedback: ${JSON.stringify(promptFeedback)}, FinishReason: ${finishReason}`);
 
         if (promptFeedback?.blockReason || finishReason === FinishReason.SAFETY || finishReason === FinishReason.OTHER) {
           const reason = promptFeedback?.blockReason || finishReason || 'Unknown Safety/Block Reason';
@@ -255,16 +331,19 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
         const responseText = response.text();
         if (responseText === undefined || responseText === null || responseText.trim() === "") {
           const reason = finishReason || 'Unknown';
+          console.error(`[Gemini API - Slot ${currentSlotNumber}] Non-streaming returned empty response. Finish Reason: ${reason}`);
           return NextResponse.json({ error: `Gemini returned an empty response (Finish Reason: ${reason}).` }, { status: 500 });
         }
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Non-streaming response text (trimmed): "${responseText.trim().substring(0, 100)}..."`);
 
         const inputTokens = result.response.usageMetadata?.promptTokenCount ?? 0;
         const outputTokens = result.response.usageMetadata?.candidatesTokenCount ?? 0;
         const tokensUsed = inputTokens + outputTokens;
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Non-streaming tokens: Input: ${inputTokens}, Output: ${outputTokens}, Combined: ${tokensUsed}`);
 
         if (keyType === 'provided' && tokensUsed > 0) {
            const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
-            user_id_param: userId,
+            user_id_param: userId!,
             tokens_to_deduct: tokensUsed,
           });
           if (rpcError) console.error(`Call Gemini: Failed to decrement tokens for user ${userId}:`, rpcError);
@@ -275,7 +354,8 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
         }
 
         // Call recordTokenUsage with 9 arguments
-        await recordTokenUsage(supabase, userId, 'Gemini', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
+        await recordTokenUsage(supabase, userId!, 'Gemini', currentModel, inputTokens, outputTokens, interactionId, currentSlotNumber, keyType);
+        console.log(`[Gemini API - Slot ${currentSlotNumber}] Non-streaming - Successfully recorded token usage.`);
 
         return NextResponse.json({
           response: responseText.trim(),
@@ -285,7 +365,7 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
       }
 
     } catch (apiError: any) {
-      console.error(`Call Gemini: API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);
+      console.error(`[Gemini API - Slot ${slotNumberInitial} - API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumberInitial}):`, apiError.message, apiError.stack, apiError);
       let errorMessage = 'Failed to get response from Google AI.';
       let errorStatus = 500;
       if (apiError.status && typeof apiError.status === 'number') errorStatus = apiError.status;
@@ -301,7 +381,9 @@ async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) 
     }
 
   } catch (error: any) {
-    console.error('Call Gemini: Unexpected error:', error);
+    // Ensure slotNumberInitial is available for logging, or use a placeholder
+    const logSlotNumber = typeof slotNumberInitial !== 'undefined' ? slotNumberInitial : "N/A";
+    console.error(`[Gemini API - Slot ${logSlotNumber} - Unexpected] Error:`, error.message, error.stack, error);
     if (error instanceof SyntaxError) return NextResponse.json({ error: 'Invalid JSON payload.' }, { status: 400 });
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }

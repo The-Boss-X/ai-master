@@ -4,6 +4,10 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --header-height: 4rem; /* 64px */
+}
+
 body {
   background-color: #f0f0f0;
 }

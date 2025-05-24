@@ -3,9 +3,11 @@ import React from 'react';
 // CORRECT IMPORT: Import AuthProvider from the context directory
 import { AuthProvider } from './context/AuthContext';
 // Assuming AccountButton exists and path is correct - uncomment if you have this component
-import AccountButton from './components/AccountButton'; // Make sure this path is correct
+// import AccountButton from './components/AccountButton'; // Removed
 import './globals.css'; // Your global styles
 import { Inter } from "next/font/google"; // Import font
+import Header from './components/Header'; // Import the new Header component
+// import ThemeApplicator from './components/ThemeApplicator'; // Remove ThemeApplicator import
 
 const inter = Inter({ subsets: ["latin"] }); // Initialize font
 
@@ -21,32 +23,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      {/* Apply font className */}
-      {/*
-        CHANGE 1: Use `h-screen` instead of `min-h-screen`.
-                  This forces the body to be exactly the viewport height.
-        CHANGE 2: Add `overflow-hidden`.
-                  This prevents the body itself from showing scrollbars
-                  if content technically tries to overflow it.
-      */}
+    <html lang="en" className="dark">
       <body className={`${inter.className} flex flex-col h-screen overflow-hidden bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100`}>
         {/* AuthProvider wraps everything to provide context */}
         <AuthProvider>
-          {/* Header Section - No changes needed here.
-              It occupies its space, and `flex-shrink-0` prevents it from shrinking.
-              `sticky` ensures it stays visible on scroll within the bounds established by the body.
-          */}
-          <header className="bg-white dark:bg-gray-800 shadow-sm p-4 sticky top-0 z-10 flex-shrink-0 border-b dark:border-gray-700">
-            <div className="w-full flex justify-between items-center">
-              <h1 className="text-xl font-semibold text-gray-800 dark:text-gray-100">
-                AI Master
-              </h1>
-              <div>
-                <AccountButton /> {/* Include the AccountButton component */}
-              </div>
-            </div>
-          </header>
+          {/* <ThemeApplicator /> // Remove ThemeApplicator component */}
+          <Header /> {/* Use the new Header component */}
   
           {/* Main content area takes remaining height */}
           {/*
@@ -55,7 +37,7 @@ export default function RootLayout({
                       AND show a vertical scrollbar ONLY IF the content (`children`)
                       rendered inside it is taller than the available space.
           */}
-          <div className="flex-grow overflow-y-auto">
+          <div className="flex-grow overflow-y-auto pt-[var(--header-height)]">
             {children}
           </div>
   

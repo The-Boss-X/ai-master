@@ -1,297 +1,285 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 // app/components/HistorySidebar.tsx
  // Ensure other imports and the rest of the component remain the same.
  // Only the handleDeleteClick function is modified here.
 
- import React, { useState, useEffect } from 'react';
- import type { InteractionHistoryItem } from '../types/InteractionHistoryItem';
- import Link from 'next/link';
+'use client';
+import React, { useState, useRef, useEffect, memo } from 'react';
+import type { InteractionHistoryItem } from '../types/InteractionHistoryItem';
+import Link from 'next/link';
 
- interface HistorySidebarProps {
-    history: InteractionHistoryItem[];
-    historyLoading: boolean;
-    historyError: string | null;
-    selectedHistoryId: string | null;
-    handleHistoryClick: (item: InteractionHistoryItem) => void;
-    fetchHistory: () => void;
-    onUpdateTitle: (id: string, newTitle: string) => Promise<boolean>;
-    onDeleteItem: (id: string) => Promise<boolean>;
-    isLoggedIn: boolean;
-    handleNewChat: () => void;
- }
+// --- Icons (Basic SVGs) ---
+const ChevronDoubleLeftIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
+  </svg>
+);
+const ChevronDoubleRightIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 4.5l7.5 7.5-7.5 7.5m-6-15l7.5 7.5-7.5 7.5" />
+  </svg>
+);
+const CogIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.646.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.333.184-.582.496-.646.87l-.212 1.282c-.09.542-.56.94-1.11.94h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.646-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.759 6.759 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.184.582-.496.646-.87l.212-1.282zM15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+  </svg>
+);
+const UserCircleIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" />
+  </svg>
+);
+const PlusIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+    </svg>
+);
 
- const HistorySidebar: React.FC<HistorySidebarProps> = ({
-    history,
-    historyLoading,
-    historyError,
-    selectedHistoryId,
-    handleHistoryClick,
-    fetchHistory,
-    onUpdateTitle,
-    onDeleteItem,
-    isLoggedIn,
-    handleNewChat,
- }) => {
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingItem, setEditingItem] = useState<InteractionHistoryItem | null>(null);
-    const [newTitle, setNewTitle] = useState('');
-    const [isSaving, setIsSaving] = useState(false);
-    const [saveError, setSaveError] = useState<string | null>(null);
-    const [isDeleting, setIsDeleting] = useState<string | null>(null);
-    const [deleteError, setDeleteError] = useState<string | null>(null);
+interface HistorySidebarProps {
+  history: InteractionHistoryItem[];
+  historyLoading: boolean;
+  historyError: string | null;
+  selectedHistoryId: string | null;
+  handleHistoryClick: (item: InteractionHistoryItem) => void;
+  fetchHistory: () => void;
+  onUpdateTitle: (id: string, newTitle: string) => Promise<boolean>;
+  onDeleteItem: (id: string) => Promise<boolean>;
+  isLoggedIn: boolean;
+  handleNewChat: () => void;
+  onOpenSettings: () => void; // Prop for opening settings modal
+}
 
-    const handleEditClick = (item: InteractionHistoryItem, e: React.MouseEvent) => {
-        if (!isLoggedIn) return;
-        e.stopPropagation();
-        setEditingItem(item);
-        setNewTitle(item.title || item.prompt || '');
-        setSaveError(null);
-        setIsModalOpen(true);
-    };
+const HistorySidebar: React.FC<HistorySidebarProps> = memo(({
+  history, historyLoading, historyError, selectedHistoryId,
+  handleHistoryClick, fetchHistory, onUpdateTitle, onDeleteItem,
+  isLoggedIn, handleNewChat, onOpenSettings,
+}) => {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
-    const handleCloseModal = () => {
-        setIsModalOpen(false);
-        setEditingItem(null);
-        setNewTitle('');
-        setIsSaving(false);
-        setSaveError(null);
-    };
+  useEffect(() => {
+    if (editingId && editInputRef.current) {
+      editInputRef.current.focus();
+    }
+  }, [editingId]);
 
-    const handleSaveTitle = async () => {
-        if (!editingItem || !newTitle.trim() || !isLoggedIn) {
-            setSaveError("Title cannot be empty.");
-            return;
-        }
-        if (newTitle.trim() === (editingItem.title || editingItem.prompt)) {
-            handleCloseModal();
-            return;
-        }
-        setIsSaving(true);
-        setSaveError(null);
-        try {
-            const success = await onUpdateTitle(editingItem.id, newTitle.trim());
-            if (success) {
-                handleCloseModal();
-            } else {
-                setSaveError("Failed to save title. Please try again.");
-            }
-        } catch (error) {
-            console.error("Error saving title in sidebar:", error);
-            setSaveError("An unexpected error occurred while saving.");
-        } finally {
-            setIsSaving(false);
-        }
-    };
+  const handleEdit = (item: InteractionHistoryItem) => {
+    setEditingId(item.id);
+    setEditText(item.title || '');
+  };
 
-    // MODIFIED handleDeleteClick function
-    const handleDeleteClick = async (id: string, e: React.MouseEvent) => {
-        // Prevent re-entry if already deleting this specific item
-        if (!isLoggedIn || isDeleting === id) {
-            if (isDeleting === id) {
-                console.log(`Delete operation for ${id} already in progress. Ignoring duplicate call.`);
-            }
-            return;
-        }
-        
-        e.stopPropagation(); // Prevent the click from selecting the history item
+  const handleSaveEdit = async () => {
+    if (!editingId || !editText.trim()) return;
+    const success = await onUpdateTitle(editingId, editText.trim());
+    if (success) {
+      setEditingId(null);
+    }
+  };
 
-        // Standard browser confirm
-        if (window.confirm('Are you sure you want to delete this history item? This action cannot be undone.')) {
-            setIsDeleting(id); // Set loading state for this specific item
-            setDeleteError(null); // Clear previous delete errors
-            try {
-                const success = await onDeleteItem(id); // Call the delete function passed from parent
-                if (!success) {
-                    setDeleteError("Failed to delete item. Please try again.");
-                    // Clear deleting state after a delay so user sees the error, only if it's still this item
-                     setTimeout(() => {
-                         if (isDeleting === id) setIsDeleting(null);
-                     }, 3000);
-                }
-                // If successful, the parent component (app/page.tsx) will remove the item from the `history`
-                // list, which will cause this list item in HistorySidebar to unmount.
-                // So, `isDeleting` for this `id` will naturally clear as the component instance is gone.
-            } catch (error) {
-                console.error("Error deleting item in sidebar:", error);
-                setDeleteError("An unexpected error occurred during deletion.");
-                setIsDeleting(null); // Clear deleting state on unexpected error to allow retry
-            }
-        } else {
-            // User clicked "Cancel" on the confirm dialog
-            console.log(`Deletion cancelled by user for ID: ${id}`);
-        }
-    };
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditText('');
+  };
 
-    useEffect(() => {
-        if (!isModalOpen) {
-            setEditingItem(null);
-        }
-    }, [isModalOpen]);
+  const handleDelete = async (id: string) => {
+    await onDeleteItem(id);
+  };
 
-    // The rest of the component's JSX remains the same...
-    // ... (ensure you copy this modified handleDeleteClick into your existing component structure) ...
+  const toggleCollapse = () => {
+    setIsCollapsed(!isCollapsed);
+  };
+
+  if (!isLoggedIn) {
     return (
-        <>
-            <aside className="w-64 md:w-72 bg-white dark:bg-gray-800 p-4 border-r border-gray-200 dark:border-gray-700 overflow-y-auto flex flex-col flex-shrink-0 h-full">
-                <div className="mb-4 flex-shrink-0">
-                    <button
-                        onClick={handleNewChat}
-                        disabled={!isLoggedIn}
-                        title={isLoggedIn ? "Start a new comparison" : "Log in to start a new chat"}
-                        className={`w-full flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-indigo-500 transition-colors ${
-                            isLoggedIn
-                                ? 'bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600'
-                                : 'bg-gray-400 dark:bg-gray-600 cursor-not-allowed'
-                        }`}
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                        </svg>
-                        New Chat
-                    </button>
-                </div>
-                <h2 className="text-lg font-semibold mb-2 text-gray-700 dark:text-gray-200 flex-shrink-0 border-t dark:border-gray-700 pt-3">History</h2>
-                {historyLoading && <p className="text-gray-500 dark:text-gray-400 animate-pulse text-sm flex-shrink-0">Loading History...</p>}
-                {!historyLoading && !isLoggedIn && (
-                    <div className="text-center text-gray-500 dark:text-gray-400 text-sm p-4 bg-gray-50 dark:bg-gray-700 rounded-md flex-grow flex items-center justify-center">
-                        <p>Please <Link href="/auth" className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Sign In</Link> to view and manage history.</p>
-                    </div>
-                )}
-                {!historyLoading && isLoggedIn && (
-                    <div className="flex flex-col flex-grow overflow-hidden">
-                        {(historyError || deleteError) && (
-                        <div className="mb-2 h-4 flex-shrink-0">
-                            {historyError && <p className="text-red-500 dark:text-red-400 text-xs truncate" title={historyError}>Error: {historyError}</p>}
-                            {deleteError && <p className="text-red-500 dark:text-red-400 text-xs truncate" title={deleteError}>{deleteError}</p>}
-                        </div>
-                        )}
-                        <div className="flex-grow overflow-y-auto mb-4 custom-scrollbar">
-                            {history.length === 0 && !historyError && (
-                                <p className="text-gray-400 dark:text-gray-500 text-sm text-center mt-4">No history yet.</p>
-                            )}
-                            {history.length > 0 && (
-                                <ul className="space-y-1">
-                                    {history.map((item) => (
-                                        <li
-                                            key={item.id}
-                                            className={`rounded-md group flex items-center justify-between transition-colors duration-150 ${
-                                                selectedHistoryId === item.id
-                                                    ? 'bg-blue-100 dark:bg-blue-900/50'
-                                                    : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                                            }`}
-                                        >
-                                            <button
-                                                onClick={() => handleHistoryClick(item)}
-                                                title={item.prompt}
-                                                className={`flex-grow text-left p-2 text-sm truncate focus:outline-none focus:ring-1 focus:ring-blue-300 dark:focus:ring-blue-600 rounded-l-md ${
-                                                    selectedHistoryId === item.id
-                                                        ? 'text-blue-800 dark:text-blue-200 font-medium'
-                                                        : 'text-gray-700 dark:text-gray-300'
-                                                } ${isDeleting === item.id ? 'opacity-50 cursor-default' : ''}`}
-                                                disabled={isDeleting === item.id}
-                                            >
-                                                {item.title || item.prompt}
-                                            </button>
-                                            <div
-                                                className={`flex items-center space-x-1 pr-2 transition-opacity duration-150 flex-shrink-0 ${
-                                                    isDeleting === item.id ? 'opacity-50' : ''
-                                                } ${
-                                                    selectedHistoryId === item.id
-                                                        ? 'opacity-100'
-                                                        : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
-                                                }`}
-                                            >
-                                                <button
-                                                    onClick={(e) => handleEditClick(item, e)}
-                                                    title="Edit Title"
-                                                    disabled={isDeleting === item.id}
-                                                    className="p-1 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-300 dark:focus:ring-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                >
-                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}> <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /> </svg>
-                                                </button>
-                                                <button
-                                                    onClick={(e) => handleDeleteClick(item.id, e)}
-                                                    title="Delete History Item"
-                                                    disabled={isDeleting === item.id}
-                                                    className="p-1 rounded text-red-500 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/50 hover:text-red-700 dark:hover:text-red-300 focus:outline-none focus:ring-1 focus:ring-red-300 dark:focus:ring-red-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                >
-                                                    {isDeleting === item.id ? (
-                                                        <svg className="animate-spin h-4 w-4 text-red-500 dark:text-red-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"> <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle> <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path> </svg>
-                                                    ) : (
-                                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}> <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /> </svg>
-                                                    )}
-                                                </button>
-                                            </div>
-                                        </li>
-                                    ))}
-                                </ul>
-                            )}
-                        </div>
-                        <button
-                            onClick={fetchHistory}
-                            disabled={historyLoading}
-                            className={`mt-auto w-full p-2 text-sm rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-300 dark:focus:ring-blue-500 text-gray-700 dark:text-gray-300 transition-colors flex-shrink-0 ${
-                                historyLoading ? 'opacity-50 cursor-not-allowed' : ''
-                            }`}
-                        >
-                            {historyLoading ? 'Refreshing...' : 'Refresh History'}
-                        </button>
-                    </div>
-                )}
-            </aside>
-
-            {isModalOpen && editingItem && (
-                <div
-                    className="fixed inset-0 bg-gray-600 bg-opacity-75 overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4"
-                    onClick={handleCloseModal}
-                >
-                    <div
-                        className="relative mx-auto p-6 border w-full max-w-md shadow-lg rounded-md bg-white dark:bg-gray-800"
-                        onClick={e => e.stopPropagation()}
-                    >
-                        <div className="mt-3 text-center sm:text-left">
-                            <h3 className="text-lg leading-6 font-medium text-gray-900 dark:text-gray-100 mb-4">
-                                Edit History Title
-                            </h3>
-                            <div className="mt-2">
-                                <input
-                                    type="text"
-                                    value={newTitle}
-                                    onChange={(e) => setNewTitle(e.target.value)}
-                                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-                                    placeholder="Enter new title"
-                                    aria-label="New history title"
-                                    onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTitle(); }}
-                                />
-                                {saveError && <p className="text-red-500 dark:text-red-400 text-sm text-left mt-2">{saveError}</p>}
-                            </div>
-                            <div className="mt-5 sm:mt-6 flex flex-col sm:flex-row-reverse sm:space-x-reverse sm:space-x-3">
-                                <button
-                                    type="button"
-                                    onClick={handleSaveTitle}
-                                    disabled={isSaving || !newTitle.trim() || newTitle.trim() === (editingItem.title || editingItem.prompt)}
-                                    className={`w-full sm:w-auto inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 text-base font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-indigo-500 sm:text-sm transition-colors ${
-                                        isSaving || !newTitle.trim() || newTitle.trim() === (editingItem.title || editingItem.prompt)
-                                            ? 'bg-indigo-300 dark:bg-indigo-800 cursor-not-allowed'
-                                            : 'bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600'
-                                    }`}
-                                >
-                                    {isSaving ? 'Saving...' : 'Save'}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={handleCloseModal}
-                                    className="mt-3 sm:mt-0center rounded-md border border-gray-300 dark:border-gray-600 shadow-sm px-4 py-2 bg-white dark:bg-gray-700 text-base font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 focus:ring-indigo-500 sm:text-sm transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-        </>
+      <aside className={`flex-shrink-0 bg-slate-100 dark:bg-slate-800 p-4 border-r border-slate-200 dark:border-slate-700 transition-all duration-300 ease-in-out ${isCollapsed ? 'w-16' : 'w-64'} h-full flex flex-col`}>
+        <div className="flex items-center justify-between mb-4">
+          {!isCollapsed && <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-200">History</h2>}
+          <button
+            onClick={toggleCollapse}
+            className="p-1.5 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+            title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+          >
+            {isCollapsed ? <ChevronDoubleRightIcon /> : <ChevronDoubleLeftIcon />}
+          </button>
+        </div>
+        {!isCollapsed && <p className="text-sm text-slate-500 dark:text-slate-400 text-center py-10">Please log in to see chat history.</p>}
+      </aside>
     );
- };
+  }
 
- export default HistorySidebar;
+  return (
+    <aside className={`flex-shrink-0 bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 transition-all duration-300 ease-in-out ${isCollapsed ? 'w-20' : 'w-72 md:w-80'} h-full flex flex-col`}>
+      {/* Header with Title and Collapse Button */}
+      <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} p-3 border-b border-slate-200 dark:border-slate-700 flex-shrink-0`}>
+        {!isCollapsed && (
+          <h2 className="text-lg font-semibold text-slate-700 dark:text-slate-200 truncate">
+            Chat History
+          </h2>
+        )}
+        <button
+          onClick={toggleCollapse}
+          className={`p-1.5 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors`}
+          title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+        >
+          {isCollapsed ? <ChevronDoubleRightIcon /> : <ChevronDoubleLeftIcon />}
+        </button>
+      </div>
+
+      {isCollapsed ? (
+        <div className="flex flex-col items-center justify-center h-full space-y-4 py-4">
+          <button
+            onClick={handleNewChat}
+            className={`flex items-center justify-center p-3 rounded-full transition-colors duration-150 
+                        bg-sky-500 text-white hover:bg-sky-600 dark:bg-sky-600 dark:hover:bg-sky-500 
+                        focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-1 focus:ring-offset-slate-100 dark:focus:ring-offset-slate-800`}
+            title="New Chat"
+          >
+            <PlusIcon />
+          </button>
+          <button
+            onClick={onOpenSettings}
+            className={`flex items-center justify-center p-3 rounded-full transition-colors duration-150 
+                       text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 
+                       focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-1 focus:ring-offset-slate-100 dark:focus:ring-offset-slate-800`}
+            title="Settings"
+          >
+            <CogIcon />
+          </button>
+          <Link
+            href="/account-settings"
+            className={`flex items-center justify-center p-3 rounded-full transition-colors duration-150 
+                       text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 
+                       focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-1 focus:ring-offset-slate-100 dark:focus:ring-offset-slate-800`}
+            title="Account"
+          >
+            <UserCircleIcon />
+          </Link>
+        </div>
+      ) : (
+        <>
+          {/* New Chat Button (Expanded) */}
+          <div className="p-3 flex-shrink-0">
+            <button
+              onClick={handleNewChat}
+              className={`w-full flex items-center font-medium px-3 py-2.5 text-sm rounded-md transition-colors duration-150 
+                          bg-sky-500 text-white hover:bg-sky-600 dark:bg-sky-600 dark:hover:bg-sky-500 
+                          focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-1 focus:ring-offset-slate-100 dark:focus:ring-offset-slate-800`}
+            >
+              <PlusIcon />
+              <span className="ml-1">New Chat</span>
+            </button>
+          </div>
+
+          {/* History List (Expanded) */}
+          <div className="flex-grow overflow-y-auto custom-scrollbar-thin p-3 space-y-1.5">
+            {historyLoading && (
+              <div className="flex items-center justify-center p-4">
+                <svg className="animate-spin h-5 w-5 text-slate-500 dark:text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span className="ml-2 text-sm text-slate-500 dark:text-slate-400">Loading...</span>
+              </div>
+            )}
+            {historyError && (
+              <div className={`p-2 text-xs text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-900/30 rounded`}>
+                {historyError}
+              </div>
+            )}
+            {!historyLoading && !historyError && history.length === 0 && (
+              <div className={`text-center text-sm text-slate-500 dark:text-slate-400 py-6 px-3`}>
+                {'No chat history yet.'}
+              </div>
+            )}
+            {!historyLoading && !historyError && history.map((item) => (
+              <div
+                key={item.id}
+                className={`group relative rounded-md transition-colors duration-150 
+                            ${selectedHistoryId === item.id 
+                                ? 'bg-sky-100 dark:bg-sky-700/50' 
+                                : 'hover:bg-slate-200 dark:hover:bg-slate-700/70'}`}
+              >
+                {editingId === item.id ? (
+                  <div className={`p-2.5`}>
+                    <input
+                      ref={editInputRef}
+                      type="text"
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSaveEdit();
+                        if (e.key === 'Escape') handleCancelEdit();
+                      }}
+                      className={`w-full p-1.5 border border-sky-400 rounded-md text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500`}
+                    />
+                    <div className="flex mt-1.5 space-x-1.5">
+                      <button onClick={handleSaveEdit} className="px-2 py-1 text-xs bg-green-500 hover:bg-green-600 text-white rounded">Save</button>
+                      <button onClick={handleCancelEdit} className="px-2 py-1 text-xs bg-slate-400 hover:bg-slate-500 text-white rounded">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => handleHistoryClick(item)}
+                    className={`w-full text-left p-2.5 text-sm truncate flex items-center 
+                                ${selectedHistoryId === item.id 
+                                    ? 'text-sky-700 dark:text-sky-300' 
+                                    : 'text-slate-700 dark:text-slate-300'}`}
+                    title={item.title || 'Untitled Chat'}
+                  >
+                    {item.title || 'Untitled Chat'}
+                  </button>
+                )}
+                {editingId !== item.id && (
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
+                    <button
+                      onClick={() => handleEdit(item)}
+                      className="p-1 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded hover:bg-slate-300 dark:hover:bg-slate-600"
+                      title="Edit title"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" /></svg>
+                    </button>
+                    <button
+                      onClick={() => handleDelete(item.id)}
+                      className="p-1 text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-700/50"
+                      title="Delete chat"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12.56 0c1.153 0 2.243.096 3.222.261m3.222.261L11 5.79M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12.56 0c1.153 0 2.243.096 3.222.261m3.222.261L11 5.79" /></svg>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Footer actions (Expanded - Settings, Account) */}
+          <div className="flex-shrink-0 p-3 mt-auto border-t border-slate-200 dark:border-slate-700 space-y-2">
+            <button
+              onClick={onOpenSettings}
+              className={`w-full flex items-center p-2.5 rounded-md text-sm font-medium transition-colors duration-150 
+                         text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 
+                         focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-1 focus:ring-offset-slate-100 dark:focus:ring-offset-slate-800`}
+            >
+              <CogIcon />
+              <span className="ml-2.5">Settings</span>
+            </button>
+            <Link
+              href="/account-settings"
+              className={`w-full flex items-center p-2.5 rounded-md text-sm font-medium transition-colors duration-150 
+                         text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 
+                         focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-1 focus:ring-offset-slate-100 dark:focus:ring-offset-slate-800`}
+            >
+              <UserCircleIcon />
+              <span className="ml-2.5">Account</span>
+            </Link>
+          </div>
+        </>
+      )}
+    </aside>
+  );
+});
+
+HistorySidebar.displayName = 'HistorySidebar';
+export default HistorySidebar;
  

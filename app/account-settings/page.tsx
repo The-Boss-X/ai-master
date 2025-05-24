@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { loadStripe } from '@stripe/stripe-js';
 
@@ -41,13 +41,14 @@ const plans: Plan[] = [
   },
 ];
 
-const AccountSettingsPage = () => {
+// This is the actual page content that uses useSearchParams
+const AccountSettingsContent = () => {
   const router = useRouter();
-  const searchParams = useSearchParams(); // For reading URL query parameters
+  const searchParams = useSearchParams();
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null);
   const [quantity, setQuantity] = useState<number>(1);
   const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<string | null>(null); // For success/error messages
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     // Check for messages from Stripe redirect
@@ -230,6 +231,15 @@ const AccountSettingsPage = () => {
         </div>
       )}
     </div>
+  );
+};
+
+// The main page component now wraps AccountSettingsContent in Suspense
+const AccountSettingsPage = () => {
+  return (
+    <Suspense fallback={<div className="container mx-auto p-4 md:p-8 text-center">Loading account details...</div>}>
+      <AccountSettingsContent />
+    </Suspense>
   );
 };
 

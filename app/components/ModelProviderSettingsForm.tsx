@@ -61,9 +61,10 @@ interface FetchedUserSettings {
   slot_6_model: string | null;
   summary_model: string | null;
   use_provided_keys: boolean | null;
-  gemini_api_key?: string | null; 
+  gemini_api_key?: string | null;
   openai_api_key?: string | null;
   anthropic_api_key?: string | null;
+  enable_streaming?: boolean | null;
 }
 // --- End Copied Types/Consts ---
 
@@ -84,6 +85,7 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
     anthropicApiKey: '',
   });
   const [useProvidedKeys, setUseProvidedKeys] = useState<boolean>(false);
+  const [currentEnableStreaming, setCurrentEnableStreaming] = useState<boolean>(false);
   const [numberOfSlots, setNumberOfSlots] = useState<number>(MIN_SLOTS);
   
   const [isLoading, setIsLoading] = useState(true);
@@ -96,6 +98,7 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
       setModelSettings({ modelSelections: Array(MAX_SLOTS).fill(''), summaryModelSelection: '' });
       setApiKeySettings({ geminiApiKey: '', openaiApiKey: '', anthropicApiKey: '' });
       setUseProvidedKeys(false);
+      setCurrentEnableStreaming(false);
       setNumberOfSlots(MIN_SLOTS);
       setIsLoading(false);
       return;
@@ -115,6 +118,7 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
       const fetchedModels: AiModelOption[] = Array(MAX_SLOTS).fill('');
       let fetchedSummaryModel: AiModelOption = '';
       let activeSlotsCount = MIN_SLOTS;
+      let fetchedEnableStreaming = false;
 
       if (fetchedData) {
         setUseProvidedKeys(fetchedData.use_provided_keys ?? false);
@@ -123,6 +127,7 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
             openaiApiKey: fetchedData.openai_api_key || '',
             anthropicApiKey: fetchedData.anthropic_api_key || '',
         });
+        fetchedEnableStreaming = fetchedData.enable_streaming ?? false;
 
         for (let i = 0; i < MAX_SLOTS; i++) {
           const modelKey = `slot_${i + 1}_model` as keyof FetchedUserSettings;
@@ -163,6 +168,7 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
         setApiKeySettings({ geminiApiKey: '', openaiApiKey: '', anthropicApiKey: '' });
       }
       setModelSettings({ modelSelections: fetchedModels, summaryModelSelection: fetchedSummaryModel });
+      setCurrentEnableStreaming(fetchedEnableStreaming);
       setNumberOfSlots(Math.max(MIN_SLOTS, activeSlotsCount));
     } catch (error: unknown) {
       console.error("Error fetching model/API key settings:", error);
@@ -172,6 +178,7 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
       setModelSettings({ modelSelections: defaultModels, summaryModelSelection: ''});
       setNumberOfSlots(MIN_SLOTS);
       setUseProvidedKeys(false);
+      setCurrentEnableStreaming(false);
       setApiKeySettings({ geminiApiKey: '', openaiApiKey: '', anthropicApiKey: '' });
     } finally {
       setIsLoading(false);
@@ -185,6 +192,7 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
       setModelSettings({ modelSelections: Array(MAX_SLOTS).fill(''), summaryModelSelection: '' });
       setApiKeySettings({ geminiApiKey: '', openaiApiKey: '', anthropicApiKey: '' });
       setUseProvidedKeys(false);
+      setCurrentEnableStreaming(false);
       setNumberOfSlots(MIN_SLOTS);
       setIsLoading(false);
       setFetchError(null);
@@ -240,9 +248,10 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
         }
     }
 
-    const payload: any = { 
+    const payload: any = {
       summary_model: modelSettings.summaryModelSelection || null,
       use_provided_keys: useProvidedKeys,
+      enable_streaming: currentEnableStreaming,
     };
 
     // Add model slots

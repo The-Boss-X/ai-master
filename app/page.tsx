@@ -573,7 +573,7 @@ const MainAppInterface = () => {
         interactionIdForLog: string | null,
         isStreamingEnabled: boolean
     ) => {
-        console.log(`[DEBUG callApiForSlot - Slot ${slotIndex + 1}] Entry. isStreamingEnabled: ${isStreamingEnabled}, Model: ${modelNameToUse}`);
+        // console.log(`[DEBUG callApiForSlot - Slot ${slotIndex + 1}] Entry. isStreamingEnabled: ${isStreamingEnabled}, Model: ${modelNameToUse}`);
         const slotNumber = slotIndex + 1;
         const updateSlotState = (updateFn: (prevState: AiSlotState) => AiSlotState) => {
             setSlotStates(prevStates => prevStates.map((state, index) => index === slotIndex ? updateFn(state) : state ));
@@ -621,7 +621,7 @@ const MainAppInterface = () => {
             }
 
             if (isStreamingEnabled) {
-                console.log(`[DEBUG callApiForSlot - Slot ${slotNumber}] Path: STREAMING. EventSource URL: ${apiUrl} with params...`);
+                // console.log(`[DEBUG callApiForSlot - Slot ${slotNumber}] Path: STREAMING. EventSource URL: ${apiUrl} with params...`);
                 
                 // Add a placeholder for the model's response to the conversation history for incremental updates
                 const initialModelMessagePlaceholder: ConversationMessage = { role: 'model', content: '' };
@@ -657,7 +657,7 @@ const MainAppInterface = () => {
                 let backendErrorReceived = false;
 
                 eventSource.onmessage = (event: MessageEvent) => { 
-                    console.log(`[DEBUG EventSource - Slot ${slotNumber}] onmessage. Data:`, event.data);
+                    // console.log(`[DEBUG EventSource - Slot ${slotNumber}] onmessage. Data:`, event.data);
                     try {
                         const data = JSON.parse(event.data);
                         if (data.type === 'chunk' && typeof data.token === 'string') {
@@ -706,7 +706,7 @@ const MainAppInterface = () => {
                 };
 
                 eventSource.onerror = (errorEvent: Event) => { 
-                    console.log(`[DEBUG EventSource - Slot ${slotNumber}] onerror. Event:`, errorEvent);
+                    // console.log(`[DEBUG EventSource - Slot ${slotNumber}] onerror. Event:`, errorEvent);
                     eventSource.close(); 
                     if (!backendErrorReceived) { // Only set generic error if a specific one wasn't received via onmessage
                         updateSlotState(prev => ({
@@ -722,7 +722,7 @@ const MainAppInterface = () => {
                 };
 
                 eventSource.addEventListener('end', (event: Event) => {
-                    console.log(`[DEBUG EventSource - Slot ${slotNumber}] "end" event. Event:`, event);
+                    // console.log(`[DEBUG EventSource - Slot ${slotNumber}] "end" event. Event:`, event);
                     eventSource.close();
                     if (backendErrorReceived) return; 
 
@@ -854,7 +854,7 @@ const MainAppInterface = () => {
         const currentStateSnapshot = [...slotStates];
         const activeSlotsForCall = currentStateSnapshot.filter(s => s.modelName);
         const streamingIsEnabledForThisCall = userStreamingPreference; 
-        console.log(`[DEBUG handleProcessText] Entry. userStreamingPreference: ${streamingIsEnabledForThisCall}. Prompt: "${currentInput.substring(0,30)}..."`);
+        // console.log(`[DEBUG handleProcessText] Entry. userStreamingPreference: ${streamingIsEnabledForThisCall}. Prompt: "${currentInput.substring(0,30)}..."`);
 
         if (currentInput === '' || !user || isAuthLoading || settingsLoading || activeSlotsForCall.length === 0 || uiLocked) return;
         const isAnySlotProcessing = currentStateSnapshot.some(s => s.loading);
@@ -928,7 +928,7 @@ const MainAppInterface = () => {
         const currentStateSnapshot = [...slotStates]; 
         const targetState = currentStateSnapshot[slotIndex];
         const streamingIsEnabledForThisCall = userStreamingPreference; 
-        console.log(`[DEBUG handleReplyToSlot - Slot ${slotIndex + 1}] Entry. userStreamingPreference: ${streamingIsEnabledForThisCall}. Input: "${targetState?.followUpInput?.substring(0,30)}..."`);
+        // console.log(`[DEBUG handleReplyToSlot - Slot ${slotIndex + 1}] Entry. userStreamingPreference: ${streamingIsEnabledForThisCall}. Input: "${targetState?.followUpInput?.substring(0,30)}..."`);
 
         if (!targetState) { console.error(`handleReplyToSlot: Invalid slotIndex ${slotIndex}`); return; }
 

@@ -1,5 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import ModelProviderSettingsForm from './ModelProviderSettingsForm';
 import TokenUsageDisplay from './TokenUsageDisplay';
@@ -19,6 +20,65 @@ const CloseIcon = () => (
 const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState('General');
   const [isTokenUsageModalOpen, setIsTokenUsageModalOpen] = useState(false);
+  const [enableStreaming, setEnableStreaming] = useState<boolean>(false);
+  const [isLoadingStreamingSetting, setIsLoadingStreamingSetting] = useState<boolean>(false);
+  const [streamingSettingError, setStreamingSettingError] = useState<string | null>(null);
+  const [streamingSettingSuccess, setStreamingSettingSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen && activeTab === 'General') {
+      setIsLoadingStreamingSetting(true);
+      setStreamingSettingError(null);
+      setStreamingSettingSuccess(null);
+      fetch('/api/settings/get-settings')
+        .then(res => {
+          if (!res.ok) {
+            return res.json().then(err => { throw new Error(err.error || 'Failed to fetch settings'); });
+          }
+          return res.json();
+        })
+        .then(data => {
+          setEnableStreaming(data?.enable_streaming || false);
+        })
+        .catch(err => {
+          console.error("Error fetching streaming setting:", err);
+          setStreamingSettingError(err.message || 'Could not load streaming preference.');
+        })
+        .finally(() => setIsLoadingStreamingSetting(false));
+    }
+  }, [isOpen, activeTab]);
+
+  const handleStreamingToggle = async (newStreamingValue: boolean) => {
+    setEnableStreaming(newStreamingValue);
+    setIsLoadingStreamingSetting(true);
+    setStreamingSettingError(null);
+    setStreamingSettingSuccess(null);
+    try {
+      const response = await fetch('/api/settings/update-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable_streaming: newStreamingValue }),
+      });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to update streaming preference.');
+      }
+      setStreamingSettingSuccess('Streaming preference updated!');
+      // Optionally, you might want to inform the parent page about the change if it affects behavior immediately.
+      // onClose(); // Or keep it open
+    } catch (err: any) {
+      console.error("Error updating streaming setting:", err);
+      setStreamingSettingError(err.message || 'Could not save streaming preference.');
+      // Revert UI optimistically updated if needed, or let user retry
+      // setEnableStreaming(!newStreamingValue); 
+    } finally {
+      setIsLoadingStreamingSetting(false);
+      setTimeout(() => {
+        setStreamingSettingSuccess(null);
+        setStreamingSettingError(null);
+      }, 3000); // Clear messages after 3 seconds
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -75,9 +135,41 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
           <div className="p-4 md:p-6 flex-grow overflow-y-auto custom-scrollbar">
             {activeTab === 'General' && (
               <div>
-                <h4 className="text-lg font-semibold text-slate-700 dark:text-slate-200 mb-3">General Settings</h4>
-                <p className="text-slate-600 dark:text-slate-400">General application settings will go here. (e.g., default behaviors, notifications).</p>
-                {/* Placeholder for general settings form */}
+                <h4 className="text-lg font-semibold text-slate-700 dark:text-slate-200 mb-4">General Settings</h4>
+                
+                {/* Streaming Setting Section */}
+                <div className="mb-6 p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800/50 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label htmlFor="streaming-toggle" className="font-medium text-slate-700 dark:text-slate-300">
+                        Enable Response Streaming
+                      </label>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md">
+                        Receive AI responses as they are generated (streamed) instead of waiting for the full response. This may consume more tokens if platform keys are used (4x multiplier).
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      id="streaming-toggle"
+                      onClick={() => handleStreamingToggle(!enableStreaming)}
+                      disabled={isLoadingStreamingSetting}
+                      className={`${enableStreaming ? 'bg-sky-600' : 'bg-slate-300 dark:bg-slate-600'} relative inline-flex items-center h-6 rounded-full w-11 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800 disabled:opacity-50`}
+                      role="switch"
+                      aria-checked={enableStreaming}
+                    >
+                      <span className="sr-only">Enable Streaming</span>
+                      <span
+                        className={`${enableStreaming ? 'translate-x-6' : 'translate-x-1'} inline-block w-4 h-4 transform bg-white rounded-full transition-transform`}
+                      />
+                    </button>
+                  </div>
+                  {isLoadingStreamingSetting && <p className="text-xs text-sky-600 dark:text-sky-400 mt-2">Processing...</p>}
+                  {streamingSettingError && <p className="text-xs text-red-600 dark:text-red-400 mt-2">Error: {streamingSettingError}</p>}
+                  {streamingSettingSuccess && <p className="text-xs text-green-600 dark:text-green-400 mt-2">{streamingSettingSuccess}</p>}
+                </div>
+
+                {/* Placeholder for other general settings */}
+                <p className="text-slate-600 dark:text-slate-400">Other general application settings will go here.</p>
               </div>
             )}
             {activeTab === 'My Account' && (

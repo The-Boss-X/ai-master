@@ -177,6 +177,7 @@ export type Database = {
           updated_at: string
           use_provided_keys: boolean
           user_id: string
+          enable_streaming: boolean | null
         }
         Insert: {
           anthropic_api_key_encrypted?: string | null
@@ -196,6 +197,7 @@ export type Database = {
           updated_at?: string
           use_provided_keys?: boolean
           user_id?: string
+          enable_streaming?: boolean | null
         }
         Update: {
           anthropic_api_key_encrypted?: string | null
@@ -215,6 +217,7 @@ export type Database = {
           updated_at?: string
           use_provided_keys?: boolean
           user_id?: string
+          enable_streaming?: boolean | null
         }
         Relationships: []
       }

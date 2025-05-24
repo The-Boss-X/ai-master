@@ -20,6 +20,7 @@ interface CallAnthropicRequest {
   slotNumber: 1 | 2 | 3 | 4 | 5 | 6;
   conversationHistory?: ConversationMessage[];
   interactionId?: string | null;
+  stream?: boolean; // Added for streaming
 }
 
 interface UserSettingsForAnthropic {
@@ -60,6 +61,14 @@ function decryptData(encryptedTextHex: string, secretKeyHex: string): string | n
 }
 
 export async function POST(request: NextRequest) {
+  return handleAnthropicRequest(request, false);
+}
+
+export async function GET(request: NextRequest) {
+  return handleAnthropicRequest(request, true);
+}
+
+async function handleAnthropicRequest(request: NextRequest, isStreamingAttempt: boolean) {
   const cookieStore = await cookies();
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -85,11 +94,41 @@ export async function POST(request: NextRequest) {
     const userId = session.user.id;
 
     let payload: CallAnthropicRequest;
-    try { payload = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 }); }
-    const { model, slotNumber, conversationHistory, interactionId, prompt } = payload;
+    let actualStreamFlag = false;
+
+    if (isStreamingAttempt && request.method === 'GET') {
+        const url = new URL(request.url);
+        const queryParams = Object.fromEntries(url.searchParams.entries());
+        payload = {
+            prompt: queryParams.prompt || "", // Will be part of conversationHistory for Anthropic
+            model: queryParams.model || "",
+            slotNumber: parseInt(queryParams.slotNumber, 10) as CallAnthropicRequest['slotNumber'] || 1,
+            conversationHistory: queryParams.conversationHistory ? JSON.parse(queryParams.conversationHistory) : [],
+            interactionId: queryParams.interactionId === 'null' || queryParams.interactionId === undefined ? null : queryParams.interactionId,
+            stream: true,
+        };
+        actualStreamFlag = true;
+        if (!payload.model || !payload.slotNumber || !payload.conversationHistory || payload.conversationHistory.length === 0) {
+          return NextResponse.json({ error: 'Missing required fields for streaming (model, slotNumber, conversationHistory with prompt).' }, { status: 400 });
+        }
+    } else { 
+        try {
+            payload = await request.json();
+            actualStreamFlag = payload.stream || false; 
+        } catch {
+            return NextResponse.json({ error: 'Invalid JSON for POST request.' }, { status: 400 });
+        }
+    }
+
+    // Note: For Anthropic, the 'prompt' from payload is expected to be the last user message in conversationHistory.
+    const { model, slotNumber, conversationHistory, interactionId } = payload;
 
     if (!model || !slotNumber || !conversationHistory || conversationHistory.length === 0) {
-      return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 });
+      return NextResponse.json({ error: 'Missing required fields (model, slotNumber, conversationHistory).' }, { status: 400 });
+    }
+    // Ensure the last message in conversationHistory is from the user, which is the effective prompt.
+    if (conversationHistory[conversationHistory.length -1].role !== 'user') {
+        return NextResponse.json({ error: 'Invalid conversation history: Last message must be from user.'}, { status: 400 });
     }
 
     const { data: userSettings, error: fetchError } = await supabase
@@ -138,53 +177,122 @@ export async function POST(request: NextRequest) {
       }));
 
     if (messagesForApi.length === 0 || messagesForApi[messagesForApi.length - 1].role !== 'user') {
-      return NextResponse.json({ error: 'Invalid conversation history format.' }, { status: 500 });
+      // This check might be redundant if validated above, but good for safety before API call
+      return NextResponse.json({ error: 'Invalid conversation history format for Anthropic API.' }, { status: 500 });
     }
 
     try {
       const anthropic = new Anthropic({ apiKey: apiKeyToUse });
-      const response = await anthropic.messages.create({
-        model: model,
-        max_tokens: 4096, // Consider making this configurable or dynamic
-        messages: messagesForApi,
-      });
 
-      let responseText = '';
-      if (response.content && response.content.length > 0 && response.content[0].type === 'text') {
-        responseText = response.content[0].text;
-      } else {
-        if (response.stop_reason === 'max_tokens') throw new Error('Response truncated due to max token limit.');
-        else if (response.stop_reason) throw new Error(`Response stopped unexpectedly. Reason: ${response.stop_reason}`);
-        throw new Error('Response was empty or in an unexpected format.');
-      }
-      if (responseText.trim() === "") throw new Error('Response was empty.');
+      if (actualStreamFlag) {
+        // STREAMING LOGIC FOR ANTHROPIC
+        const stream = anthropic.messages.stream({
+            model: model,
+            max_tokens: 4096, 
+            messages: messagesForApi,
+        });
+        
+        const encoder = new TextEncoder();
+        const readableStream = new ReadableStream({
+            async start(controller) {
+                try {
+                    let accumulatedResponseText = "";
+                    let inputTokens = 0;
+                    let outputTokens = 0;
 
-      const inputTokens = response.usage?.input_tokens ?? 0;
-      const outputTokens = response.usage?.output_tokens ?? 0;
-      const tokensUsed = inputTokens + outputTokens;
+                    // Anthropic stream events: message_start, content_block_delta, message_delta, message_stop
+                    for await (const event of stream) {
+                        if (event.type === 'message_start' && event.message.usage) {
+                            inputTokens = event.message.usage.input_tokens;
+                        }
+                        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+                            const token = event.delta.text;
+                            accumulatedResponseText += token;
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", token })}\n\n`));
+                        }
+                        if (event.type === 'message_delta' && event.delta.stop_reason && event.usage) {
+                            outputTokens = event.usage.output_tokens;
+                        }
+                    }
+                    // message_stop event also contains usage, which is more reliable for output tokens.
+                    // The Anthropic SDK might aggregate this; final check after loop.
+                    // If inputTokens is still 0, it means message_start didn't have it (should usually be there).
 
-      if (keyType === 'provided' && tokensUsed > 0) {
-        const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
-          user_id_param: userId,
-          tokens_to_deduct: tokensUsed,
+                    const tokensUsed = inputTokens + outputTokens;
+                    let tokensToDeduct = tokensUsed;
+
+                    if (keyType === 'provided' && tokensUsed > 0) {
+                        tokensToDeduct = tokensUsed * 4; // Apply 4x multiplier
+                        const { error: rpcError } = await supabase.rpc('decrement_user_tokens', {
+                            user_id_param: userId,
+                            tokens_to_deduct: tokensToDeduct,
+                        });
+                        if (rpcError) console.error(`Call Anthropic (Stream): Failed to decrement tokens for user ${userId}:`, rpcError);
+                        else console.log(`Call Anthropic (Stream): Decremented ${tokensToDeduct} (raw: ${tokensUsed}) tokens.`);
+                    }
+                    
+                    await recordTokenUsage(supabase, userId, 'Anthropic', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
+
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "tokens", inputTokens, outputTokens })}\n\n`));
+                    controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended" })}\n\n`));
+                } catch (e: any) {
+                    console.error("Streaming error in Anthropic:", e);
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: e.message || 'Streaming failed within Anthropic route' })}\n\n`));
+                    controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended due to error" })}\n\n`));
+                } finally {
+                    controller.close();
+                }
+            }
+        });
+        return new Response(readableStream, {
+            headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
         });
 
-        if (rpcError) {
-          console.error(`Call Anthropic: Failed to decrement tokens for user ${userId}:`, rpcError);
-          // Decide if this is a critical failure
+      } else {
+        // NON-STREAMING LOGIC (existing)
+        const response = await anthropic.messages.create({
+          model: model,
+          max_tokens: 4096, // Consider making this configurable or dynamic
+          messages: messagesForApi,
+        });
+
+        let responseText = '';
+        if (response.content && response.content.length > 0 && response.content[0].type === 'text') {
+          responseText = response.content[0].text;
         } else {
-            // Optional: Check rpcData for new token balances if needed
-            console.log(`Call Anthropic: Decremented ${tokensUsed} tokens. New balances:`, rpcData);
+          if (response.stop_reason === 'max_tokens') throw new Error('Response truncated due to max token limit.');
+          else if (response.stop_reason) throw new Error(`Response stopped unexpectedly. Reason: ${response.stop_reason}`);
+          throw new Error('Response was empty or in an unexpected format.');
         }
+        if (responseText.trim() === "") throw new Error('Response was empty.');
+
+        const inputTokens = response.usage?.input_tokens ?? 0;
+        const outputTokens = response.usage?.output_tokens ?? 0;
+        const tokensUsed = inputTokens + outputTokens;
+
+        if (keyType === 'provided' && tokensUsed > 0) {
+          const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
+            user_id_param: userId,
+            tokens_to_deduct: tokensUsed,
+          });
+
+          if (rpcError) {
+            console.error(`Call Anthropic: Failed to decrement tokens for user ${userId}:`, rpcError);
+            // Decide if this is a critical failure
+          } else {
+              // Optional: Check rpcData for new token balances if needed
+              console.log(`Call Anthropic: Decremented ${tokensUsed} tokens. New balances:`, rpcData);
+          }
+        }
+
+        await recordTokenUsage(supabase, userId, 'Anthropic', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
+
+        return NextResponse.json({
+          response: responseText.trim(),
+          inputTokens,
+          outputTokens
+        }, { status: 200 });
       }
-
-      await recordTokenUsage(supabase, userId, 'Anthropic', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
-
-      return NextResponse.json({
-        response: responseText.trim(),
-        inputTokens,
-        outputTokens
-      }, { status: 200 });
 
     } catch (apiError: any) {
       console.error(`Call Anthropic: API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);

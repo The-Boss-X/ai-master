@@ -26,6 +26,7 @@ interface FetchedSettings {
     slot_5_model: string | null;
     slot_6_model: string | null;
     summary_model: string | null;
+    enable_streaming?: boolean | null; // Added for streaming
 }
 
 interface AiSlotState {
@@ -77,6 +78,7 @@ const MainAppInterface = () => {
     const [needsSummaryAndLog, setNeedsSummaryAndLog] = useState(false);
     const isProcessingSummaryAndLog = useRef(false);
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+    const [userStreamingPreference, setUserStreamingPreference] = useState<boolean>(false); // Added for streaming
 
     const handleSettingsPossiblyChanged = () => {
         console.log("Settings modal closed, re-fetching settings for new chat if no history selected.");
@@ -122,6 +124,7 @@ const MainAppInterface = () => {
             const data: FetchedSettings | null = await response.json();
             const newSlotStates: AiSlotState[] = [];
             let fetchedSummaryModel: string | null = null;
+            let fetchedStreamingPref = false; // Added for streaming
             if (data) {
                 for (let i = 0; i < MAX_SLOTS; i++) {
                     const modelKey = `slot_${i + 1}_model` as keyof FetchedSettings;
@@ -134,13 +137,16 @@ const MainAppInterface = () => {
                 if (data.summary_model && typeof data.summary_model === 'string' && data.summary_model.includes(': ')) {
                     fetchedSummaryModel = data.summary_model;
                 } else if (data.summary_model) { console.warn(`Invalid format for summary model in settings: "${data.summary_model}".`); }
+                fetchedStreamingPref = data.enable_streaming || false; // Added for streaming
             }
             setSlotStates(newSlotStates);
             setSummaryModelState(fetchedSummaryModel);
-            console.log(`Applied settings for new chat. Active slots: ${newSlotStates.length}, Summary Model: ${fetchedSummaryModel || 'None'}`);
+            setUserStreamingPreference(fetchedStreamingPref); // Added for streaming
+            console.log(`Applied settings for new chat. Active slots: ${newSlotStates.length}, Summary Model: ${fetchedSummaryModel || 'None'}, Streaming: ${fetchedStreamingPref}`);
         } catch (e: any) {
             console.error("Error fetching settings for new chat:", e);
             setSettingsError(e.message); setSlotStates([]); setSummaryModelState(null);
+            setUserStreamingPreference(false); // Added for streaming
         } finally {
             setSettingsLoading(false);
         }
@@ -194,6 +200,7 @@ const MainAppInterface = () => {
             setShowPanels(false); setUiLocked(false); setNeedsSummaryAndLog(false);
             setSettingsError(null); setHistoryError(null); setMainInputText('');
             setSummaryModelState(null); setSummaryText(null); setSummaryLoading(false); setSummaryError(null);
+            setUserStreamingPreference(false); // Reset streaming preference
             isProcessingSummaryAndLog.current = false;
         }
     }, [user, isAuthLoading, fetchHistory, fetchSettingsForNewChat, selectedHistoryId, uiLocked, currentChatPrompt]);
@@ -563,8 +570,10 @@ const MainAppInterface = () => {
         slotIndex: number,
         modelNameToUse: string,
         currentConversation: ConversationMessage[],
-        interactionIdForLog: string | null
+        interactionIdForLog: string | null,
+        isStreamingEnabled: boolean
     ) => {
+        console.log(`[DEBUG callApiForSlot - Slot ${slotIndex + 1}] Entry. isStreamingEnabled: ${isStreamingEnabled}, Model: ${modelNameToUse}`);
         const slotNumber = slotIndex + 1;
         const updateSlotState = (updateFn: (prevState: AiSlotState) => AiSlotState) => {
             setSlotStates(prevStates => prevStates.map((state, index) => index === slotIndex ? updateFn(state) : state ));
@@ -582,10 +591,10 @@ const MainAppInterface = () => {
             return;
         }
 
-        console.log(`[Slot ${slotNumber}] History BEFORE this turn being sent:`, JSON.parse(JSON.stringify(currentConversation)));
+        console.log(`[Slot ${slotNumber}] History BEFORE this turn being sent (Streaming: ${isStreamingEnabled}):`, JSON.parse(JSON.stringify(currentConversation)));
         updateSlotState(prev => ({
             ...prev, loading: true, response: null, error: null,
-            conversationHistory: currentConversation,
+            conversationHistory: currentConversation, // Keep full history here for UI state
             responseReceivedThisTurn: false,
             inputTokensThisTurn: null,
             outputTokensThisTurn: null,
@@ -607,47 +616,202 @@ const MainAppInterface = () => {
 
             const lastUserMessageContent = currentConversation.findLast(m => m.role === 'user')?.content;
             if (!lastUserMessageContent) {
-                // This case should ideally be caught earlier, but as a safeguard:
                 updateSlotState(prev => ({ ...prev, loading: false, error: "No user prompt content to send.", responseReceivedThisTurn: true }));
                 return;
             }
 
-            const apiResponse = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+            if (isStreamingEnabled) {
+                console.log(`[DEBUG callApiForSlot - Slot ${slotNumber}] Path: STREAMING. EventSource URL: ${apiUrl} with params...`);
+                
+                // Add a placeholder for the model's response to the conversation history for incremental updates
+                const initialModelMessagePlaceholder: ConversationMessage = { role: 'model', content: '' };
+
+                updateSlotState(prev => ({
+                    ...prev,
+                    loading: true,
+                    response: '', // Clear previous full response text
+                    error: null,
+                    // prev.conversationHistory already contains the latest user message from the caller
+                    // Append the model's placeholder message to it
+                    conversationHistory: [...prev.conversationHistory, initialModelMessagePlaceholder],
+                    responseReceivedThisTurn: false,
+                    inputTokensThisTurn: null,
+                    outputTokensThisTurn: null,
+                }));
+                
+                const paramsForEventSource: Record<string, string> = {
+                    prompt: lastUserMessageContent, 
+                    model: specificModel,
+                    slotNumber: String(slotNumber),
+                    stream: String(true),
+                    conversationHistory: JSON.stringify(currentConversation) 
+                };
+                if (interactionIdForLog !== null && interactionIdForLog !== undefined) {
+                    paramsForEventSource.interactionId = interactionIdForLog;
+                }
+
+                const eventSource = new EventSource(`${apiUrl}?${new URLSearchParams(paramsForEventSource)}`);
+                let currentResponseText = "";
+                let accumulatedInputTokens = 0;
+                let accumulatedOutputTokens = 0;
+                let backendErrorReceived = false;
+
+                eventSource.onmessage = (event: MessageEvent) => { 
+                    console.log(`[DEBUG EventSource - Slot ${slotNumber}] onmessage. Data:`, event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'chunk' && typeof data.token === 'string') {
+                            currentResponseText += data.token; // Accumulate the full response
+                            updateSlotState(prev => {
+                                const newConversationHistory = prev.conversationHistory.map((msg, index) => {
+                                    // Update the content of the last message if it's our model placeholder
+                                    if (index === prev.conversationHistory.length - 1 && msg.role === 'model') {
+                                        return { ...msg, content: currentResponseText };
+                                    }
+                                    return msg;
+                                });
+                                return {
+                                    ...prev,
+                                    conversationHistory: newConversationHistory, // This updates the UI incrementally
+                                    response: currentResponseText, // Keep slotState.response up-to-date as well
+                                    loading: true 
+                                };
+                            });
+                        } else if (data.type === 'tokens' && typeof data.inputTokens === 'number' && typeof data.outputTokens === 'number') {
+                            accumulatedInputTokens = data.inputTokens;
+                            accumulatedOutputTokens = data.outputTokens;
+                            console.log(`[Slot ${slotNumber}] Streamed tokens received: In: ${data.inputTokens}, Out: ${data.outputTokens}`);
+                        } else if (data.type === 'error') {
+                            backendErrorReceived = true;
+                            console.error(`[Slot ${slotNumber}] Streaming error from backend event:`, data.error);
+                            updateSlotState(prev => ({ 
+                                ...prev, 
+                                error: prev.error ? `${prev.error}\nStream Error: ${data.error || 'Unknown error from stream'}` : `Stream Error: ${data.error || 'Unknown error from stream'}`, 
+                                loading: false, 
+                                responseReceivedThisTurn: true 
+                            }));
+                            eventSource.close(); 
+                        }
+                    } catch (e) {
+                        backendErrorReceived = true; // Assume parsing error is critical for this message
+                        console.error(`[Slot ${slotNumber}] Error parsing streaming event data:`, event.data, e);
+                        updateSlotState(prev => ({
+                           ...prev,
+                           error: prev.error ? `${prev.error}\nStream Error: Invalid event data received.` : 'Stream Error: Invalid event data received.',
+                           loading: false,
+                           responseReceivedThisTurn: true
+                        }));
+                        eventSource.close(); // Close if we can't parse a message, might be safest
+                    }
+                };
+
+                eventSource.onerror = (errorEvent: Event) => { 
+                    console.log(`[DEBUG EventSource - Slot ${slotNumber}] onerror. Event:`, errorEvent);
+                    eventSource.close(); 
+                    if (!backendErrorReceived) { // Only set generic error if a specific one wasn't received via onmessage
+                        updateSlotState(prev => ({
+                            ...prev, 
+                            response: currentResponseText || null, 
+                            error: prev.error || 'Connection error during streaming. Partial response shown if any.', 
+                            loading: false, 
+                            responseReceivedThisTurn: true,
+                            inputTokensThisTurn: accumulatedInputTokens || null,
+                            outputTokensThisTurn: accumulatedOutputTokens || null,
+                        }));
+                    }
+                };
+
+                eventSource.addEventListener('end', (event: Event) => {
+                    console.log(`[DEBUG EventSource - Slot ${slotNumber}] "end" event. Event:`, event);
+                    eventSource.close();
+                    if (backendErrorReceived) return; 
+
+                    // newModelMessage is no longer constructed here, history is already live
+                    inputTokens = accumulatedInputTokens;
+                    outputTokens = accumulatedOutputTokens;
+
+                    updateSlotState(prev => {
+                        // Ensure the final accumulated text is definitely in the history's last model message
+                        const finalConversationHistory = prev.conversationHistory.map((msg, index) => {
+                            if (index === prev.conversationHistory.length - 1 && msg.role === 'model') {
+                                return { ...msg, content: currentResponseText };
+                            }
+                            return msg;
+                        });
+                        return {
+                            ...prev, 
+                            response: currentResponseText, // Final full response
+                            error: null, 
+                            loading: false, // Loading is now false
+                            conversationHistory: finalConversationHistory, 
+                            responseReceivedThisTurn: true,
+                            inputTokensThisTurn: inputTokens, 
+                            outputTokensThisTurn: outputTokens,
+                        };
+                    });
+                    console.log(`[Slot ${slotNumber}] (${modelNameToUse}) streaming finished. Input: ${inputTokens}, Output: ${outputTokens}`);
+                });
+
+                // Simplified Promise for waiting; relies on error/end events to resolve/reject.
+                await new Promise<void>((resolve, reject) => {
+                    let ended = false;
+                    eventSource.addEventListener('end', () => {
+                        if (!ended) { ended = true; resolve(); }
+                    });
+                    eventSource.onerror = () => {
+                        if (!ended) { 
+                            ended = true; 
+                            // Error state already set by onerror handler, just reject to stop the await
+                            reject(new Error('Critical streaming connection failure reported by onerror')); 
+                        }
+                    }; 
+                }).catch(e => {
+                    // This catch is for the promise itself, primarily if onerror rejects.
+                    // The UI state should already be handled by the eventSource.onerror callback.
+                    console.warn(`[Slot ${slotNumber}] Promise rejected after EventSource error/end:`, e.message);
+                });
+
+            } else {
+                // NON-STREAMING LOGIC
+                const requestBody = { // Define requestBody here, within the non-streaming block
                     prompt: lastUserMessageContent,
                     model: specificModel,
                     slotNumber,
-                    conversationHistory: currentConversation,
-                    interactionId: interactionIdForLog
-                })
-            });
-            const result = await apiResponse.json().catch(() => ({ error: "Invalid JSON response from AI API" }));
-
-            if (!apiResponse.ok) {
-                throw new Error(result.error || `AI API call failed (${apiResponse.status} ${apiResponse.statusText})`);
-            }
-            modelResponseText = result.response;
-            inputTokens = result.inputTokens ?? 0;
-            outputTokens = result.outputTokens ?? 0;
-
-            if (!modelResponseText) throw new Error("AI API returned an empty response.");
-
-            newModelMessage = { role: 'model', content: modelResponseText };
-            updateSlotState(prev => {
-                const currentHistory = Array.isArray(prev.conversationHistory) ? prev.conversationHistory : [];
-                const finalHistory = [...currentHistory, newModelMessage!]; 
-                console.log(`[Slot ${slotNumber}] Updating state on SUCCESS. Final history:`, JSON.parse(JSON.stringify(finalHistory)));
-                return {
-                    ...prev, response: modelResponseText, error: null, loading: false,
-                    conversationHistory: finalHistory, responseReceivedThisTurn: true,
-                    inputTokensThisTurn: inputTokens,
-                    outputTokensThisTurn: outputTokens,
+                    conversationHistory: currentConversation, 
+                    interactionId: interactionIdForLog,
+                    stream: false 
                 };
-            });
-            console.log(`[Slot ${slotNumber}] (${modelNameToUse}) received response. Input: ${inputTokens}, Output: ${outputTokens}`);
+                const apiResponse = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody) 
+                });
+                const result = await apiResponse.json().catch(() => ({ error: "Invalid JSON response from AI API" }));
 
+                if (!apiResponse.ok) {
+                    throw new Error(result.error || `AI API call failed (${apiResponse.status} ${apiResponse.statusText})`);
+                }
+                modelResponseText = result.response;
+                inputTokens = result.inputTokens ?? 0;
+                outputTokens = result.outputTokens ?? 0;
+
+                if (!modelResponseText) throw new Error("AI API returned an empty response.");
+                newModelMessage = { role: 'model', content: modelResponseText };
+                updateSlotState(prev => {
+                    const currentHistory = Array.isArray(prev.conversationHistory) ? prev.conversationHistory : [];
+                    const finalHistory = [...currentHistory, newModelMessage!]; 
+                    console.log(`[Slot ${slotNumber}] Updating state on SUCCESS. Final history:`, JSON.parse(JSON.stringify(finalHistory)));
+                    return {
+                        ...prev, response: modelResponseText, error: null, loading: false,
+                        conversationHistory: finalHistory, responseReceivedThisTurn: true,
+                        inputTokensThisTurn: inputTokens,
+                        outputTokensThisTurn: outputTokens,
+                    };
+                });
+                console.log(`[Slot ${slotNumber}] (${modelNameToUse}) received response. Input: ${inputTokens}, Output: ${outputTokens}`);
+            }
+
+            // Common logic for appending to DB (after stream or regular call)
             if (interactionIdForLog && lastUserMessage && newModelMessage) {
                 console.log(`[Slot ${slotNumber}] Attempting to APPEND turn to DB (ID: ${interactionIdForLog}).`);
                 fetch('/api/append-conversation', {
@@ -683,12 +847,14 @@ const MainAppInterface = () => {
                 outputTokensThisTurn: 0,
             }));
         }
-    }, []);
+    }, [userStreamingPreference]); 
 
     const handleProcessText = useCallback(async () => {
         const currentInput = mainInputText.trim();
         const currentStateSnapshot = [...slotStates];
         const activeSlotsForCall = currentStateSnapshot.filter(s => s.modelName);
+        const streamingIsEnabledForThisCall = userStreamingPreference; 
+        console.log(`[DEBUG handleProcessText] Entry. userStreamingPreference: ${streamingIsEnabledForThisCall}. Prompt: "${currentInput.substring(0,30)}..."`);
 
         if (currentInput === '' || !user || isAuthLoading || settingsLoading || activeSlotsForCall.length === 0 || uiLocked) return;
         const isAnySlotProcessing = currentStateSnapshot.some(s => s.loading);
@@ -739,12 +905,13 @@ const MainAppInterface = () => {
                     ? [newUserMessage] 
                     : [...(currentStateSnapshot[originalIndex].conversationHistory || []), newUserMessage];
                 
-                console.log(`[Slot ${originalIndex + 1}] Calling API via handleProcessText. Model: ${slotStateFromSnapshot.modelName}. History length: ${historyForApi.length}`);
+                console.log(`[Slot ${originalIndex + 1}] Calling API via handleProcessText. Model: ${slotStateFromSnapshot.modelName}. Streaming: ${streamingIsEnabledForThisCall}. History length: ${historyForApi.length}`);
                 return callApiForSlot(
                     originalIndex, 
                     slotStateFromSnapshot.modelName,
                     historyForApi,
-                    currentInteractionIdForLog
+                    currentInteractionIdForLog,
+                    streamingIsEnabledForThisCall // Pass streaming preference
                 );
             }
             console.error("Error finding slot index/model in handleProcessText loop for API call prep.");
@@ -755,11 +922,14 @@ const MainAppInterface = () => {
             console.log("All main API call initiations complete via handleProcessText.");
             setUiLocked(false);
         });
-    }, [mainInputText, user, isAuthLoading, settingsLoading, selectedHistoryId, slotStates, callApiForSlot, uiLocked, summaryLoading, summaryModelState, initialSlotState]);
+    }, [mainInputText, user, isAuthLoading, settingsLoading, selectedHistoryId, slotStates, callApiForSlot, uiLocked, summaryLoading, summaryModelState, initialSlotState, userStreamingPreference]);
 
     const handleReplyToSlot = useCallback((slotIndex: number) => {
         const currentStateSnapshot = [...slotStates]; 
         const targetState = currentStateSnapshot[slotIndex];
+        const streamingIsEnabledForThisCall = userStreamingPreference; 
+        console.log(`[DEBUG handleReplyToSlot - Slot ${slotIndex + 1}] Entry. userStreamingPreference: ${streamingIsEnabledForThisCall}. Input: "${targetState?.followUpInput?.substring(0,30)}..."`);
+
         if (!targetState) { console.error(`handleReplyToSlot: Invalid slotIndex ${slotIndex}`); return; }
 
         const followUpPromptText = targetState.followUpInput.trim(); 
@@ -767,7 +937,7 @@ const MainAppInterface = () => {
 
         if (!followUpPromptText || !modelName || !user || !selectedHistoryId || targetState.loading || uiLocked || summaryLoading) return;
 
-        console.log(`Sending follow-up to Slot ${slotIndex + 1} (${modelName}): "${followUpPromptText}"`);
+        console.log(`Sending follow-up to Slot ${slotIndex + 1} (${modelName}), Streaming: ${streamingIsEnabledForThisCall}: "${followUpPromptText}"`);
         setUiLocked(true);
         setLastSubmittedPrompt(followUpPromptText); 
         setNeedsSummaryAndLog(false);
@@ -792,17 +962,18 @@ const MainAppInterface = () => {
         
         const historyForApiReply = [...targetState.conversationHistory, newUserMessageForReply];
 
-        console.log(`[Slot ${slotIndex + 1}] Calling API from Reply. History length: ${historyForApiReply.length}`);
+        console.log(`[Slot ${slotIndex + 1}] Calling API from Reply. Streaming: ${streamingIsEnabledForThisCall}. History length: ${historyForApiReply.length}`);
         callApiForSlot(
             slotIndex, 
             modelName, 
             historyForApiReply,
-            selectedHistoryId
+            selectedHistoryId,
+            streamingIsEnabledForThisCall // Pass streaming preference
         ).finally(() => {
             setUiLocked(false);
         });
 
-    }, [user, slotStates, callApiForSlot, selectedHistoryId, uiLocked, summaryLoading]);
+    }, [user, slotStates, callApiForSlot, selectedHistoryId, uiLocked, summaryLoading, userStreamingPreference]);
 
     const isProcessingAnySlot = slotStates.some(slot => slot.loading);
     const isProcessingSummary = summaryLoading;

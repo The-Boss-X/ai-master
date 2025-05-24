@@ -20,6 +20,7 @@ interface CallOpenAIRequest {
   slotNumber: 1 | 2 | 3 | 4 | 5 | 6;
   conversationHistory?: ConversationMessage[];
   interactionId?: string | null;
+  stream?: boolean;
 }
 
 interface UserSettingsForOpenAI {
@@ -60,6 +61,14 @@ function decryptData(encryptedTextHex: string, secretKeyHex: string): string | n
 }
 
 export async function POST(request: NextRequest) {
+  return handleOpenAIRequest(request, false);
+}
+
+export async function GET(request: NextRequest) {
+  return handleOpenAIRequest(request, true);
+}
+
+async function handleOpenAIRequest(request: NextRequest, isStreamingAttempt: boolean) {
   const cookieStore = await cookies();
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -85,7 +94,32 @@ export async function POST(request: NextRequest) {
     const userId = session.user.id;
 
     let payload: CallOpenAIRequest;
-    try { payload = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 }); }
+    let actualStreamFlag = false;
+
+    if (isStreamingAttempt && request.method === 'GET') {
+        const url = new URL(request.url);
+        const queryParams = Object.fromEntries(url.searchParams.entries());
+        payload = {
+            prompt: queryParams.prompt || "",
+            model: queryParams.model || "",
+            slotNumber: parseInt(queryParams.slotNumber, 10) as CallOpenAIRequest['slotNumber'] || 1,
+            conversationHistory: queryParams.conversationHistory ? JSON.parse(queryParams.conversationHistory) : [], 
+            interactionId: queryParams.interactionId === 'null' || queryParams.interactionId === undefined ? null : queryParams.interactionId,
+            stream: true, 
+        };
+        actualStreamFlag = true;
+         if (!payload.prompt || !payload.model || !payload.slotNumber) {
+          return NextResponse.json({ error: 'Missing required fields for streaming (prompt, model, slotNumber).' }, { status: 400 });
+        }
+    } else { 
+        try {
+            payload = await request.json();
+            actualStreamFlag = payload.stream || false; 
+        } catch {
+            return NextResponse.json({ error: 'Invalid JSON for POST request.' }, { status: 400 });
+        }
+    }
+    
     const { prompt, model, slotNumber, conversationHistory, interactionId } = payload;
 
     if (!prompt || !model || !slotNumber) {
@@ -145,34 +179,98 @@ export async function POST(request: NextRequest) {
     
     const openai = new OpenAI({ apiKey: apiKeyToUse });
     try {
-      const completion = await openai.chat.completions.create({
-        model: model,
-        messages: messagesForApi,
-      });
-      const responseText = completion.choices[0]?.message?.content;
-      if (!responseText) throw new Error('No response text received from OpenAI.');
-
-      const inputTokens = completion.usage?.prompt_tokens ?? 0;
-      const outputTokens = completion.usage?.completion_tokens ?? 0;
-      const tokensUsed = inputTokens + outputTokens;
-
-      if (keyType === 'provided' && tokensUsed > 0) {
-        const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
-          user_id_param: userId,
-          tokens_to_deduct: tokensUsed,
+      if (actualStreamFlag) {
+        const stream = await openai.chat.completions.create({
+            model: model,
+            messages: messagesForApi,
+            stream: true,
         });
-         if (rpcError) console.error(`Call OpenAI: Failed to decrement tokens for user ${userId}:`, rpcError);
-         else console.log(`Call OpenAI: Decremented ${tokensUsed} tokens. New balances:`, rpcData);
+
+        const encoder = new TextEncoder();
+        const readableStream = new ReadableStream({
+            async start(controller) {
+                try {
+                    let accumulatedResponseText = "";
+                    let inputTokens = 0;
+                    let outputTokens = 0;
+
+                    for await (const chunk of stream) {
+                        const token = chunk.choices[0]?.delta?.content || "";
+                        if (token) {
+                            accumulatedResponseText += token;
+                            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", token })}\n\n`));
+                        }
+                        if (chunk.usage) {
+                            inputTokens = chunk.usage.prompt_tokens;
+                            outputTokens = chunk.usage.completion_tokens;
+                        }
+                    }
+                    
+                    if (inputTokens === 0 && outputTokens === 0) {
+                        inputTokens = messagesForApi.reduce((acc, msg) => acc + (msg.content?.length || 0) / 4, 0);
+                        outputTokens = accumulatedResponseText.length / 4; 
+                    }
+
+                    const tokensUsed = Math.ceil(inputTokens) + Math.ceil(outputTokens);
+                    let tokensToDeduct = tokensUsed;
+
+                    if (keyType === 'provided' && tokensUsed > 0) {
+                        tokensToDeduct = tokensUsed * 4;
+                        const { error: rpcError } = await supabase.rpc('decrement_user_tokens', {
+                            user_id_param: userId,
+                            tokens_to_deduct: tokensToDeduct,
+                        });
+                        if (rpcError) console.error(`Call OpenAI (Stream): Failed to decrement tokens for user ${userId}:`, rpcError);
+                        else console.log(`Call OpenAI (Stream): Decremented ${tokensToDeduct} (raw: ${tokensUsed}) tokens.`);
+                    }
+
+                    await recordTokenUsage(supabase, userId, 'OpenAI', model, Math.ceil(inputTokens), Math.ceil(outputTokens), interactionId, slotNumber, keyType);
+
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "tokens", inputTokens: Math.ceil(inputTokens), outputTokens: Math.ceil(outputTokens) })}\n\n`));
+                    controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended" })}\n\n`));
+                } catch (e: any) {
+                    console.error("Streaming error in OpenAI:", e);
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: e.message || 'Streaming failed within OpenAI route' })}\n\n`));
+                    controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended due to error" })}\n\n`));
+                } finally {
+                    controller.close();
+                }
+            }
+        });
+
+        return new Response(readableStream, {
+            headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
+        });
+
+      } else {
+        const completion = await openai.chat.completions.create({
+          model: model,
+          messages: messagesForApi,
+        });
+        const responseText = completion.choices[0]?.message?.content;
+        if (!responseText) throw new Error('No response text received from OpenAI.');
+
+        const inputTokens = completion.usage?.prompt_tokens ?? 0;
+        const outputTokens = completion.usage?.completion_tokens ?? 0;
+        const tokensUsed = inputTokens + outputTokens;
+
+        if (keyType === 'provided' && tokensUsed > 0) {
+          const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
+            user_id_param: userId,
+            tokens_to_deduct: tokensUsed,
+          });
+           if (rpcError) console.error(`Call OpenAI: Failed to decrement tokens for user ${userId}:`, rpcError);
+           else console.log(`Call OpenAI: Decremented ${tokensUsed} tokens. New balances:`, rpcData);
+        }
+
+        await recordTokenUsage(supabase, userId, 'OpenAI', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
+
+        return NextResponse.json({
+          response: responseText.trim(),
+          inputTokens,
+          outputTokens
+        }, { status: 200 });
       }
-
-      await recordTokenUsage(supabase, userId, 'OpenAI', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
-
-      return NextResponse.json({
-        response: responseText.trim(),
-        inputTokens,
-        outputTokens
-      }, { status: 200 });
-
     } catch (apiError: any) {
       console.error(`Call OpenAI: API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);
       let errorMessage = 'Failed to get response from OpenAI.';

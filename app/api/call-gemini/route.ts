@@ -20,6 +20,7 @@ interface CallGeminiRequest {
   slotNumber: 1 | 2 | 3 | 4 | 5 | 6;
   conversationHistory?: ConversationMessage[];
   interactionId?: string | null;
+  stream?: boolean;
 }
 
 interface UserSettingsForGemini {
@@ -60,6 +61,14 @@ function decryptData(encryptedTextHex: string, secretKeyHex: string): string | n
 }
 
 export async function POST(request: NextRequest) {
+  return handleRequest(request, false);
+}
+
+export async function GET(request: NextRequest) {
+  return handleRequest(request, true);
+}
+
+async function handleRequest(request: NextRequest, isStreamingAttempt: boolean) {
   const cookieStore = await cookies();
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -85,7 +94,32 @@ export async function POST(request: NextRequest) {
     const userId = session.user.id;
 
     let payload: CallGeminiRequest;
-    try { payload = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 }); }
+    let actualStreamFlag = false;
+
+    if (isStreamingAttempt) {
+        const url = new URL(request.url);
+        const queryParams = Object.fromEntries(url.searchParams.entries());
+        payload = {
+            prompt: queryParams.prompt || "",
+            model: queryParams.model || "",
+            slotNumber: parseInt(queryParams.slotNumber, 10) as CallGeminiRequest['slotNumber'] || 1,
+            conversationHistory: queryParams.conversationHistory ? JSON.parse(queryParams.conversationHistory) : [],
+            interactionId: queryParams.interactionId === 'null' || queryParams.interactionId === undefined ? null : queryParams.interactionId,
+            stream: true,
+        };
+        actualStreamFlag = true;
+         if (!payload.prompt || !payload.model || !payload.slotNumber) {
+          return NextResponse.json({ error: 'Missing required fields for streaming (prompt, model, slotNumber).' }, { status: 400 });
+        }
+    } else {
+        try {
+            payload = await request.json();
+            actualStreamFlag = payload.stream || false;
+        } catch {
+            return NextResponse.json({ error: 'Invalid JSON.' }, { status: 400 });
+        }
+    }
+    
     const { prompt, model, slotNumber, conversationHistory, interactionId } = payload;
 
     if (!prompt || !model || !slotNumber) {
@@ -131,55 +165,124 @@ export async function POST(request: NextRequest) {
     }
 
     const historyForStartChat: Content[] = (conversationHistory || [])
-      .slice(0, -1) // Remove the last user prompt as it's sent separately
       .filter(msg => msg.content?.trim())
       .map(msg => ({
-        role: msg.role, // 'user' or 'model'
+        role: msg.role === 'user' ? 'user' : 'model',
         parts: [{ text: msg.content }]
       }));
+      
+    const currentPromptContent: Content = { role: 'user', parts: [{ text: prompt }] };
+    const fullConversationForStream: Content[] = [...historyForStartChat, currentPromptContent];
 
     try {
       const genAI = new GoogleGenerativeAI(apiKeyToUse);
       const generativeModel = genAI.getGenerativeModel({ model: model });
-      const chat = generativeModel.startChat({ history: historyForStartChat });
-      const result = await chat.sendMessage(prompt);
-      const response = result.response;
 
-      const promptFeedback = response.promptFeedback;
-      const finishReason = response.candidates?.[0]?.finishReason;
+      if (actualStreamFlag) {
+        const streamResult = await generativeModel.generateContentStream({ contents: fullConversationForStream });
+        
+        const encoder = new TextEncoder();
+        const readableStream = new ReadableStream({
+          async start(controller) {
+            try {
+              let accumulatedResponseText = "";
+              let inputTokens = 0;
+              let outputTokens = 0;
 
-      if (promptFeedback?.blockReason || finishReason === FinishReason.SAFETY || finishReason === FinishReason.OTHER) {
-        const reason = promptFeedback?.blockReason || finishReason || 'Unknown Safety/Block Reason';
-        return NextResponse.json({ error: `Gemini response blocked due to ${reason}.` }, { status: 400 });
-      }
+              for await (const chunk of streamResult.stream) {
+                const chunkText = chunk.text();
+                if (chunkText) {
+                  accumulatedResponseText += chunkText;
+                  outputTokens += chunk.usageMetadata?.candidatesTokenCount || (chunkText.length / 4);
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "chunk", token: chunkText })}\n\n`));
+                }
+                if (chunk.usageMetadata?.promptTokenCount && !inputTokens) {
+                    inputTokens = chunk.usageMetadata.promptTokenCount;
+                }
+              }
+              
+              const finalUsageMetadata = (await streamResult.response)?.usageMetadata;
+              inputTokens = finalUsageMetadata?.promptTokenCount || inputTokens || 0;
+              outputTokens = finalUsageMetadata?.candidatesTokenCount || outputTokens || 0;
+              const tokensUsed = inputTokens + outputTokens;
 
-      const responseText = response.text();
-      if (responseText === undefined || responseText === null || responseText.trim() === "") {
-        const reason = finishReason || 'Unknown';
-        return NextResponse.json({ error: `Gemini returned an empty response (Finish Reason: ${reason}).` }, { status: 500 });
-      }
+              let tokensToDeduct = tokensUsed;
+              if (keyType === 'provided' && tokensUsed > 0) {
+                tokensToDeduct = tokensUsed * 4;
+                const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
+                  user_id_param: userId,
+                  tokens_to_deduct: tokensToDeduct,
+                });
+                if (rpcError) console.error(`Call Gemini (Stream): Failed to decrement tokens for user ${userId}:`, rpcError);
+                else console.log(`Call Gemini (Stream): Decremented ${tokensToDeduct} (raw: ${tokensUsed}) tokens. Balances:`, rpcData);
+              } else if (keyType === 'user' && tokensUsed > 0) {
+                 // If user key, recordTokenUsage will handle incrementing their total_tokens_used_overall
+                 // No direct RPC call to increment_user_own_key_tokens needed here as it's in recordTokenUsage
+              }
+              
+              // Call recordTokenUsage with 9 arguments
+              await recordTokenUsage(supabase, userId, 'Gemini', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
 
-      const inputTokens = result.response.usageMetadata?.promptTokenCount ?? 0;
-      const outputTokens = result.response.usageMetadata?.candidatesTokenCount ?? 0;
-      const tokensUsed = inputTokens + outputTokens;
-
-      if (keyType === 'provided' && tokensUsed > 0) {
-         const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
-          user_id_param: userId,
-          tokens_to_deduct: tokensUsed,
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "tokens", inputTokens, outputTokens })}\n\n`));
+              controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended" })}\n\n`));
+            } catch (e: any) {
+              console.error("Streaming error in Gemini:", e);
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: e.message || 'Streaming failed within Gemini route' })}\n\n`));
+              controller.enqueue(encoder.encode(`event: end\ndata: ${JSON.stringify({ message: "Stream ended due to error" })}\n\n`));
+            } finally {
+              controller.close();
+            }
+          }
         });
-        if (rpcError) console.error(`Call Gemini: Failed to decrement tokens for user ${userId}:`, rpcError);
-        else console.log(`Call Gemini: Decremented ${tokensUsed} tokens. New balances:`, rpcData);
+        
+        return new Response(readableStream, {
+          headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
+        });
 
+      } else {
+        const chat = generativeModel.startChat({ history: historyForStartChat });
+        const result = await chat.sendMessage(prompt);
+        const response = result.response;
+
+        const promptFeedback = response.promptFeedback;
+        const finishReason = response.candidates?.[0]?.finishReason;
+
+        if (promptFeedback?.blockReason || finishReason === FinishReason.SAFETY || finishReason === FinishReason.OTHER) {
+          const reason = promptFeedback?.blockReason || finishReason || 'Unknown Safety/Block Reason';
+          return NextResponse.json({ error: `Gemini response blocked due to ${reason}.` }, { status: 400 });
+        }
+
+        const responseText = response.text();
+        if (responseText === undefined || responseText === null || responseText.trim() === "") {
+          const reason = finishReason || 'Unknown';
+          return NextResponse.json({ error: `Gemini returned an empty response (Finish Reason: ${reason}).` }, { status: 500 });
+        }
+
+        const inputTokens = result.response.usageMetadata?.promptTokenCount ?? 0;
+        const outputTokens = result.response.usageMetadata?.candidatesTokenCount ?? 0;
+        const tokensUsed = inputTokens + outputTokens;
+
+        if (keyType === 'provided' && tokensUsed > 0) {
+           const { data: rpcData, error: rpcError } = await supabase.rpc('decrement_user_tokens', {
+            user_id_param: userId,
+            tokens_to_deduct: tokensUsed,
+          });
+          if (rpcError) console.error(`Call Gemini: Failed to decrement tokens for user ${userId}:`, rpcError);
+          else console.log(`Call Gemini: Decremented ${tokensUsed} tokens. New balances:`, rpcData);
+        } else if (keyType === 'user' && tokensUsed > 0) {
+            // If user key, recordTokenUsage will handle incrementing their total_tokens_used_overall
+            // No direct RPC call to increment_user_own_key_tokens needed here as it's in recordTokenUsage
+        }
+
+        // Call recordTokenUsage with 9 arguments
+        await recordTokenUsage(supabase, userId, 'Gemini', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
+
+        return NextResponse.json({
+          response: responseText.trim(),
+          inputTokens,
+          outputTokens
+        }, { status: 200 });
       }
-
-      await recordTokenUsage(supabase, userId, 'Gemini', model, inputTokens, outputTokens, interactionId, slotNumber, keyType);
-
-      return NextResponse.json({
-        response: responseText.trim(),
-        inputTokens,
-        outputTokens
-      }, { status: 200 });
 
     } catch (apiError: any) {
       console.error(`Call Gemini: API Error (Model: ${model}, User: ${userId}, Slot: ${slotNumber}):`, apiError);

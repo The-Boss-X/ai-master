@@ -52,6 +52,13 @@ export default function AccountButton() {
         <span className="text-sm text-gray-700 hidden sm:inline">
           {user.email}
         </span>
+        {/* Add Link to Account Settings */}
+        <Link
+          href="/account-settings"
+          className="px-3 py-2 text-sm font-medium rounded-md transition-colors duration-150 bg-green-500 text-white hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-offset-1"
+        >
+          Account Settings
+        </Link>
         <button
           onClick={handleSignOut}
           disabled={isSigningOut}

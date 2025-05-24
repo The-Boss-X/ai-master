@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -33,7 +34,7 @@ const AVAILABLE_MODELS = {
 const MODEL_OPTIONS = Object.entries(AVAILABLE_MODELS).flatMap(
   ([provider, models]) => models.map(model => `${provider}: ${model}`)
 );
-type AiModelOption = typeof MODEL_OPTIONS[number] | '';
+type AiModelOption = string;
 
 const MIN_SLOTS = 1;
 const MAX_SLOTS = 6;
@@ -123,18 +124,37 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
 
         for (let i = 0; i < MAX_SLOTS; i++) {
           const modelKey = `slot_${i + 1}_model` as keyof FetchedUserSettings;
-          if (fetchedData[modelKey]) {
-            const isValidOption = MODEL_OPTIONS.includes(fetchedData[modelKey] as AiModelOption);
-            if (isValidOption) {
-              fetchedModels[i] = fetchedData[modelKey] as AiModelOption;
+          const currentModelValue = fetchedData[modelKey] as string | null;
+
+          if (currentModelValue) {
+            if (fetchedData.use_provided_keys === false) { // User is using their own keys
+              fetchedModels[i] = currentModelValue;
               activeSlotsCount = Math.max(activeSlotsCount, i + 1);
-            } else { console.warn(`Fetched model \"${fetchedData[modelKey]}\" for slot ${i + 1} is no longer available. Clearing.`); }
+            } else { // User is using provided keys (or default behavior)
+              const isValidOption = MODEL_OPTIONS.includes(currentModelValue);
+              if (isValidOption) {
+                fetchedModels[i] = currentModelValue;
+                activeSlotsCount = Math.max(activeSlotsCount, i + 1);
+              } else {
+                console.warn(`Fetched model "${currentModelValue}" for slot ${i + 1} is not in MODEL_OPTIONS and use_provided_keys is true/null. Clearing.`);
+                // fetchedModels[i] remains ''
+              }
+            }
           }
         }
         if (fetchedData.summary_model) {
-          const isValidSummaryOption = MODEL_OPTIONS.includes(fetchedData.summary_model as AiModelOption);
-          if (isValidSummaryOption) { fetchedSummaryModel = fetchedData.summary_model as AiModelOption; }
-          else { console.warn(`Fetched summary model \"${fetchedData.summary_model}\" is no longer available. Clearing.`); }
+          const summaryModelValue = fetchedData.summary_model as string;
+          if (fetchedData.use_provided_keys === false) { // User is using their own keys
+            fetchedSummaryModel = summaryModelValue;
+          } else { // User is using provided keys (or default behavior)
+            const isValidSummaryOption = MODEL_OPTIONS.includes(summaryModelValue);
+            if (isValidSummaryOption) {
+              fetchedSummaryModel = summaryModelValue;
+            } else {
+              console.warn(`Fetched summary model "${summaryModelValue}" is not in MODEL_OPTIONS and use_provided_keys is true/null. Clearing.`);
+              // fetchedSummaryModel remains ''
+            }
+          }
         }
       } else {
         setUseProvidedKeys(false);
@@ -218,12 +238,28 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
         }
     }
 
-    const payload = {
-      models: activeModelSelections.map((sel, i) => ({ slot: i + 1, model_name: sel || null })),
+    const payload: any = { 
       summary_model: modelSettings.summaryModelSelection || null,
-      apiKeys: useProvidedKeys ? null : apiKeySettings,
       use_provided_keys: useProvidedKeys,
     };
+
+    // Add model slots
+    for (let i = 0; i < numberOfSlots; i++) {
+      payload[`slot_${i + 1}_model`] = modelSettings.modelSelections[i] || null;
+    }
+    // Ensure remaining slots up to MAX_SLOTS are nulled if not in numberOfSlots
+    for (let i = numberOfSlots; i < MAX_SLOTS; i++) {
+      payload[`slot_${i + 1}_model`] = null;
+    }
+
+    // Add API keys if not using provided keys
+    if (!useProvidedKeys) {
+      if (apiKeySettings.geminiApiKey) payload.gemini_api_key = apiKeySettings.geminiApiKey;
+      if (apiKeySettings.openaiApiKey) payload.openai_api_key = apiKeySettings.openaiApiKey;
+      if (apiKeySettings.anthropicApiKey) payload.anthropic_api_key = apiKeySettings.anthropicApiKey;
+    }
+    // Note: The 'apiKeys' field from the original payload structure is intentionally omitted 
+    // as the backend expects individual key fields at the top level.
 
     try {
       const response = await fetch('/api/settings/update-settings', {
@@ -266,6 +302,9 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
 
   return (
     <div className="space-y-8 py-2">
+      <datalist id="model-options-list">
+        {MODEL_OPTIONS.map(opt => <option key={`datalist-${opt}`} value={opt} />)}
+      </datalist>
       {/* Model Selection Section */}
       <section>
         <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-200 mb-1">Configure AI Model Slots</h2>
@@ -276,15 +315,27 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
               <label htmlFor={`model-${index}`} className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                 Comparison Slot {index + 1}
               </label>
-              <select
-                id={`model-${index}`}
-                value={selectedModel}
-                onChange={(e) => handleModelChange(index, e.target.value as AiModelOption)}
-                className="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:ring-sky-500 focus:border-sky-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
-              >
-                <option value="">-- Select Model --</option>
-                {MODEL_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-              </select>
+              {useProvidedKeys ? (
+                <select
+                  id={`model-${index}`}
+                  value={selectedModel}
+                  onChange={(e) => handleModelChange(index, e.target.value)}
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:ring-sky-500 focus:border-sky-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
+                >
+                  <option value="">-- Select Model --</option>
+                  {MODEL_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  id={`model-${index}`}
+                  list="model-options-list"
+                  value={selectedModel}
+                  onChange={(e) => handleModelChange(index, e.target.value)}
+                  placeholder="Type or select model"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:ring-sky-500 focus:border-sky-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
+                />
+              )}
             </div>
           ))}
         </div>
@@ -310,15 +361,27 @@ const ModelProviderSettingsForm: React.FC<ModelProviderSettingsFormProps> = ({ o
       <section>
         <h3 className="text-lg font-semibold text-slate-700 dark:text-slate-200 mb-1">Summary Model</h3>
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">Select a model to generate summaries of the comparison slots. Requires at least 2 active slots.</p>
-        <select
-          id="summary-model"
-          value={modelSettings.summaryModelSelection}
-          onChange={(e) => handleSummaryModelChange(e.target.value as AiModelOption)}
-          className="w-full md:max-w-md p-2.5 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:ring-sky-500 focus:border-sky-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
-        >
-          <option value="">-- No Summary Model --</option>
-          {MODEL_OPTIONS.map(opt => <option key={`summary-${opt}`} value={opt}>{opt}</option>)}
-        </select>
+        {useProvidedKeys ? (
+          <select
+            id="summary-model"
+            value={modelSettings.summaryModelSelection}
+            onChange={(e) => handleSummaryModelChange(e.target.value)}
+            className="w-full md:max-w-md p-2.5 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:ring-sky-500 focus:border-sky-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
+          >
+            <option value="">-- No Summary Model --</option>
+            {MODEL_OPTIONS.map(opt => <option key={`summary-${opt}`} value={opt}>{opt}</option>)}
+          </select>
+        ) : (
+          <input
+            type="text"
+            id="summary-model"
+            list="model-options-list"
+            value={modelSettings.summaryModelSelection}
+            onChange={(e) => handleSummaryModelChange(e.target.value)}
+            placeholder="Type or select summary model"
+            className="w-full md:max-w-md p-2.5 border border-slate-300 dark:border-slate-600 rounded-md shadow-sm focus:ring-sky-500 focus:border-sky-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
+          />
+        )}
       </section>
 
       {/* API Key Management Section */}
